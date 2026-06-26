@@ -1,5 +1,29 @@
 import { createHmac, createHash, createCipheriv, randomBytes } from "crypto";
 
+// ---------------------------------------------------------------------------
+// Reference-Based Redaction Types
+// ---------------------------------------------------------------------------
+
+/**
+ * A structured payload for fields listed in `referenceKeys`.
+ * - `id`  — the non-sensitive internal identifier stored in Volidator as [REF:id].
+ * - `pii` — the real value used ONLY to compute the blind index, then discarded.
+ *
+ * @example
+ *   actor: { id: "usr_890", pii: "john@company.com" }
+ *   // stored:      "[REF:usr_890]"
+ *   // blind index: HMAC("john@company.com")
+ */
+export type ReferencePayload = { id: string; pii: string };
+
+/**
+ * Utility type that enforces { id, pii } shape on any LogPayload fields
+ * whose key appears in the `referenceKeys` constructor option.
+ * Gives a compile-time error if a developer passes a raw string instead.
+ */
+export type EnforceReference<TData, TRefKeys extends keyof TData> =
+  Omit<TData, TRefKeys> & { [K in TRefKeys]: ReferencePayload };
+
 export interface TelemetryConfig {
   preset?: "strict" | "standard" | "full";
   ip?: "track" | "anonymize" | "skip";
@@ -24,11 +48,24 @@ export interface TelemetryContext {
 }
 
 export interface LogPayload {
-  actor?: string;
-  actorId?: string; // support actorId as alias
+  /**
+   * The actor performing the action. Pass a plain string for normal logs.
+   * Pass a `ReferencePayload` when this field is listed in `referenceKeys`:
+   *   actor: { id: "usr_890", pii: "john@company.com" }
+   */
+  actor?: string | ReferencePayload;
+  actorId?: string; // support actorId as alias (plain string only)
   action: string;
-  target?: string;
-  targetId?: string; // support targetId as alias
+  /**
+   * The target of the action. Pass a plain string for normal logs.
+   * Pass a `ReferencePayload` when this field is listed in `referenceKeys`.
+   */
+  target?: string | ReferencePayload;
+  targetId?: string; // support targetId as alias (plain string only)
+  /**
+   * Arbitrary metadata. Values for keys listed in `referenceKeys` must be
+   * `ReferencePayload` objects: { id: "ref_id", pii: "sensitive_value" }.
+   */
   metadata?: Record<string, any>;
   context?: TelemetryContext;
   telemetry?: TelemetryConfig;
@@ -42,6 +79,13 @@ interface EmbedTokenConfig {
   expiresIn?: string;
   /** Base URL of the Volidator dashboard. Defaults to "https://dash.volidator.com". */
   dashboardUrl?: string;
+  /**
+   * The exact origin of the parent application that will embed this iframe
+   * (e.g. "https://app.yourcompany.com"). When provided, it is appended as
+   * a `?host=` query parameter so the iframe can perform strict postMessage
+   * origin validation for JIT Hydration.
+   */
+  hostOrigin?: string;
 }
 
 interface EmbedTokenResult {
@@ -70,11 +114,28 @@ export class VolidatorClient {
    * Example:
    *   redactKeys: ["actor", "metadata.email", "metadata.ssn"]
    *
-   * Why this works: Volidator encrypts the entire payload client-side. By scrubbing
-   * PII *before* encryption, the plaintext never contains sensitive data — satisfying
-   * HIPAA, GDPR, and SOC2 requirements with zero NLP/AI and zero performance cost.
+   * For dashboard-readable names, prefer `referenceKeys` which stores a non-sensitive
+   * reference ID ([REF:id]) instead of [REDACTED], enabling JIT Hydration in the embed.
    */
   private redactKeys: string[];
+
+  /**
+   * Keys whose values use Reference-Based Redaction (JIT Hydration).
+   *
+   * Unlike `redactKeys` which stores [REDACTED:<key>], `referenceKeys` stores
+   * [REF:<id>] — a non-sensitive internal identifier. The dashboard resolves
+   * this reference to a display name via a postMessage handshake with the
+   * parent application at render time. PII never reaches Volidator's servers.
+   *
+   * Fields in this list MUST be supplied as `ReferencePayload` objects:
+   *   actor: { id: "usr_890", pii: "john@company.com" }
+   *
+   * The `pii` field is used ONLY for blind index computation, then discarded.
+   * The `id` field is stored in the encrypted payload as [REF:usr_890].
+   *
+   * Supported scopes: same as redactKeys — "actor", "target", "metadata.fieldName".
+   */
+  private referenceKeys: string[];
 
   constructor(config: {
     apiKey: string;
@@ -85,11 +146,19 @@ export class VolidatorClient {
     clientSecret?: string;
     telemetry?: TelemetryConfig;
     /**
-     * Fields to redact before encryption. Supports top-level fields ("actor", "target")
-     * and nested metadata fields ("metadata.email", "metadata.ssn", "metadata.phone").
-     * Redacted values become "[REDACTED:<fieldName>]" in the encrypted payload.
+     * Fields to replace with [REDACTED:key] before encryption.
+     * Supports "actor", "target", and "metadata.fieldName".
+     * The dashboard will display [REDACTED] for these fields.
      */
     redactKeys?: string[];
+    /**
+     * Fields to replace with [REF:id] before encryption (JIT Hydration).
+     * Supports "actor", "target", and "metadata.fieldName".
+     * Fields must be supplied as { id, pii } objects in log() calls.
+     * The dashboard resolves [REF:id] to display names at render time.
+     * See: https://docs.volidator.com/guides/jit-hydration/
+     */
+    referenceKeys?: string[];
   }) {
     this.apiKey = config.apiKey;
     this.encryptionKey = config.encryptionKey;
@@ -97,6 +166,7 @@ export class VolidatorClient {
     this.projectId = config.projectId;
     this.clientSecret = config.clientSecret;
     this.redactKeys = config.redactKeys || [];
+    this.referenceKeys = config.referenceKeys || [];
     // Derive a 256-bit key from the client encryption key (matches SDK & browser WebCrypto)
     this.hashedKey = createHash("sha256").update(config.encryptionKey).digest();
 
@@ -243,9 +313,22 @@ export class VolidatorClient {
   // log() — Encrypt and ingest a single audit event
   // ---------------------------------------------------------------------------
   async log(payload: LogPayload): Promise<boolean> {
-    const actor = payload.actor || payload.actorId || "unknown";
+    // Resolve actor / target — may be a plain string or a ReferencePayload
+    const actorRaw = payload.actor || payload.actorId || "unknown";
+    const targetRaw = payload.target || payload.targetId || "unknown";
     const action = payload.action;
-    const target = payload.target || payload.targetId || "unknown";
+
+    // ── PII extraction helpers ───────────────────────────────────────────────
+    // For ReferencePayload objects, `pii` is the real value used for the blind
+    // index; `id` is the non-sensitive identifier stored in the payload.
+    const extractPii  = (v: string | ReferencePayload): string =>
+      typeof v === "object" ? v.pii : v;
+    const extractId   = (v: string | ReferencePayload): string =>
+      typeof v === "object" ? v.id  : v;
+
+    // Canonical string values used through the rest of log()
+    const actor  = extractPii(actorRaw);
+    const target = extractPii(targetRaw);
 
     // Merge instance telemetry configuration with log-level override
     const logTelemetry = payload.telemetry 
@@ -309,25 +392,51 @@ export class VolidatorClient {
       }
     }
 
-    // ── PII/PHI Redaction ────────────────────────────────────────────────────
-    // Apply redactKeys rules BEFORE building the encrypted payload.
-    // Blind indexes are computed from the original value so filtered queries
-    // still work; only the stored plaintext is scrubbed.
+    // ── PII/PHI Redaction & Reference Substitution ───────────────────────────
+    // Both redactKeys and referenceKeys are applied BEFORE building the encrypted
+    // payload. Blind indexes are always computed from the original PII value so
+    // filtered queries still work; only the stored plaintext is scrubbed/ref'd.
+
+    /**
+     * scrub() — classic static redaction.
+     * Replaces the value with [REDACTED:<key>] for fields in redactKeys.
+     */
     const scrub = (value: string, key: string): string =>
       this.redactKeys.includes(key) ? `[REDACTED:${key}]` : value;
 
-    // Scrub top-level fields
-    const safeActor  = scrub(actor,  "actor");
-    const safeTarget = scrub(target, "target");
+    /**
+     * ref() — reference-based redaction (JIT Hydration).
+     * For fields in referenceKeys, writes [REF:<id>] using the non-sensitive
+     * internal identifier. The `pii` value was already extracted above and
+     * used for the blind index — it is not stored anywhere.
+     */
+    const applyRef = (rawValue: string | ReferencePayload, key: string): string => {
+      if (this.referenceKeys.includes(key)) {
+        const id = extractId(rawValue);
+        return `[REF:${id}]`;
+      }
+      // Fall through to standard scrub (which is a no-op if key isn't in redactKeys)
+      return scrub(extractPii(rawValue), key);
+    };
 
-    // Scrub metadata fields (supports "metadata.fieldName" notation)
+    // Apply to top-level fields
+    const safeActor  = applyRef(actorRaw,  "actor");
+    const safeTarget = applyRef(targetRaw, "target");
+
+    // Apply to metadata fields (supports "metadata.fieldName" notation)
     const rawMetadata = payload.metadata || {};
     const safeMetadata: Record<string, any> = {};
     for (const [k, v] of Object.entries(rawMetadata)) {
       const metaKey = `metadata.${k}`;
-      safeMetadata[k] = this.redactKeys.includes(metaKey) && typeof v === "string"
-        ? `[REDACTED:${k}]`
-        : v;
+      if (this.referenceKeys.includes(metaKey) && typeof v === "object" && v !== null && "id" in v) {
+        // Reference payload: store [REF:id]
+        safeMetadata[k] = `[REF:${(v as ReferencePayload).id}]`;
+      } else if (this.redactKeys.includes(metaKey) && typeof v === "string") {
+        // Classic redaction: store [REDACTED:fieldName]
+        safeMetadata[k] = `[REDACTED:${k}]`;
+      } else {
+        safeMetadata[k] = v;
+      }
     }
 
     // Construct final plaintext payload before encrypting
@@ -342,7 +451,8 @@ export class VolidatorClient {
       enrichedPayload.context = context;
     }
 
-    // Blind indexes are derived from the ORIGINAL values so searchability is preserved
+    // Blind indexes are derived from the ORIGINAL PII values (not the ref IDs)
+    // so searchability is fully preserved even when referenceKeys is used.
     const actorBlindIndex = this.generateBlindIndex(actor);
     const actionBlindIndex = this.generateBlindIndex(action);
     const encryptedPayload = await this.encryptPayload(enrichedPayload);
@@ -380,6 +490,7 @@ export class VolidatorClient {
       actorId,
       expiresIn = "2h",
       dashboardUrl = "https://dash.volidator.com",
+      hostOrigin,
     } = config;
 
     // 1. Compute the blind index for this actor (same HMAC the SDK uses during ingestion)
@@ -401,7 +512,12 @@ export class VolidatorClient {
     const token = this.signHS256JWT(payload, this.clientSecret);
 
     // 5. Append the encryptionKey as the URL hash fragment — browsers never send it to the server
-    const embedUrl = `${dashboardUrl}/embed/${token}#${this.encryptionKey}`;
+    // 6. Optionally append ?host= so the iframe can perform strict postMessage origin validation
+    //    for JIT Hydration (useVolidatorHydration). Never transmitted to Volidator's server.
+    const hostParam = hostOrigin
+      ? `?host=${encodeURIComponent(hostOrigin)}`
+      : "";
+    const embedUrl = `${dashboardUrl}/embed/${token}${hostParam}#${this.encryptionKey}`;
 
     return { token, embedUrl };
   }
