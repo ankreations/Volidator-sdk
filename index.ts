@@ -63,6 +63,12 @@ export interface LogPayload {
   target?: string | ReferencePayload;
   targetId?: string; // support targetId as alias (plain string only)
   /**
+   * The tenant or client identifier (e.g. B2B company name/ID).
+   * Pass a plain string for normal logs, or a `ReferencePayload`.
+   */
+  tenant?: string | ReferencePayload;
+  tenantId?: string; // support tenantId as alias (plain string only)
+  /**
    * Arbitrary metadata. Values for keys listed in `referenceKeys` must be
    * `ReferencePayload` objects: { id: "ref_id", pii: "sensitive_value" }.
    */
@@ -74,7 +80,13 @@ export interface LogPayload {
 
 interface EmbedTokenConfig {
   /** The plaintext actor identifier (e.g. "usr_123") */
-  actorId: string;
+  actorId?: string;
+  /** The plaintext target identifier (e.g. "usr_123") */
+  targetId?: string;
+  /** The plaintext tenant identifier (e.g. "johnsbakery") */
+  tenantId?: string;
+  /** Scopes the logs to query. If not provided, defaults to 'actor' if actorId is provided, or 'tenant' if tenantId is provided. */
+  scope?: "actor" | "target" | "tenant" | "all";
   /** Duration string: "30m", "2h", "7d". Defaults to "2h". */
   expiresIn?: string;
   /** Base URL of the Volidator dashboard. Defaults to "https://dash.volidator.com". */
@@ -95,9 +107,7 @@ interface EmbedTokenResult {
 
 export class VolidatorClient {
   private apiKey: string;
-  private encryptionKey: string;
   private endpoint: string;
-  private hashedKey: Buffer;
   private telemetryConfig: Required<Omit<TelemetryConfig, "preset">>;
 
   // Optional fields required only for generateEmbedToken()
@@ -137,9 +147,16 @@ export class VolidatorClient {
    */
   private referenceKeys: string[];
 
+  // Keyring properties
+  private activeKeyId: string;
+  private keyring: Record<string, string>;
+  private hashedKeyring: Record<string, Buffer>;
+
   constructor(config: {
     apiKey: string;
-    encryptionKey: string;
+    encryptionKey?: string;
+    activeEncryptionKeyId?: string;
+    keyring?: Record<string, string>;
     endpoint?: string;
     // Provide these when you need to generate embed tokens server-side
     projectId?: string;
@@ -161,14 +178,37 @@ export class VolidatorClient {
     referenceKeys?: string[];
   }) {
     this.apiKey = config.apiKey;
-    this.encryptionKey = config.encryptionKey;
     this.endpoint = config.endpoint || "https://ingestion.volidator.com";
     this.projectId = config.projectId;
     this.clientSecret = config.clientSecret;
     this.redactKeys = config.redactKeys || [];
     this.referenceKeys = config.referenceKeys || [];
-    // Derive a 256-bit key from the client encryption key (matches SDK & browser WebCrypto)
-    this.hashedKey = createHash("sha256").update(config.encryptionKey).digest();
+
+    // Parse encryption keys & keyring
+    if (config.keyring && config.activeEncryptionKeyId) {
+      this.keyring = config.keyring;
+      this.activeKeyId = config.activeEncryptionKeyId;
+    } else if (config.encryptionKey) {
+      this.activeKeyId = "v1";
+      this.keyring = { "v1": config.encryptionKey };
+    } else {
+      throw new Error("Either encryptionKey OR (keyring AND activeEncryptionKeyId) must be provided in VolidatorClient constructor.");
+    }
+
+    // Limit keyring size to 5 for performance & security
+    if (Object.keys(this.keyring).length > 5) {
+      throw new Error("Keyring size cannot exceed 5 keys.");
+    }
+
+    if (!this.keyring[this.activeKeyId]) {
+      throw new Error(`Active key ID '${this.activeKeyId}' must exist in the keyring.`);
+    }
+
+    // Derive 256-bit keys for all active keys in the keyring
+    this.hashedKeyring = {};
+    for (const [id, key] of Object.entries(this.keyring)) {
+      this.hashedKeyring[id] = createHash("sha256").update(key).digest();
+    }
 
     // Default to 'standard' preset if nothing is provided
     this.telemetryConfig = VolidatorClient.resolveTelemetryConfig(config.telemetry || { preset: "standard" });
@@ -191,10 +231,10 @@ export class VolidatorClient {
       return "";
     };
 
-    const rawIp = getHeader("cf-connecting-ip") || 
-                  getHeader("x-real-ip") || 
-                  getHeader("x-forwarded-for");
-    
+    const rawIp = getHeader("cf-connecting-ip") ||
+      getHeader("x-real-ip") ||
+      getHeader("x-forwarded-for");
+
     const ip = rawIp ? rawIp.split(",")[0].trim() : (req?.socket?.remoteAddress || "");
     const userAgent = getHeader("user-agent");
 
@@ -286,8 +326,8 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   // Blind Index — deterministic HMAC-SHA256 for searchable encrypted fields
   // ---------------------------------------------------------------------------
-  private generateBlindIndex(value: string): string {
-    return createHmac("sha256", this.hashedKey).update(value).digest("hex");
+  private generateBlindIndex(value: string, keyBuffer: Buffer): string {
+    return createHmac("sha256", keyBuffer).update(value).digest("hex");
   }
 
   // ---------------------------------------------------------------------------
@@ -297,7 +337,8 @@ export class VolidatorClient {
   private async encryptPayload(payload: object): Promise<string> {
     const text = JSON.stringify(payload);
     const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.hashedKey, iv);
+    const activeHashedKey = this.hashedKeyring[this.activeKeyId];
+    const cipher = createCipheriv("aes-256-gcm", activeHashedKey, iv);
 
     const ciphertext = Buffer.concat([
       cipher.update(text, "utf8"),
@@ -306,7 +347,8 @@ export class VolidatorClient {
     const tag = cipher.getAuthTag();
 
     const finalBuffer = Buffer.concat([iv, ciphertext, tag]);
-    return finalBuffer.toString("base64");
+    // Prepend active key ID version prefix
+    return `${this.activeKeyId}:${finalBuffer.toString("base64")}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -316,22 +358,24 @@ export class VolidatorClient {
     // Resolve actor / target — may be a plain string or a ReferencePayload
     const actorRaw = payload.actor || payload.actorId || "unknown";
     const targetRaw = payload.target || payload.targetId || "unknown";
+    const tenantRaw = payload.tenant || payload.tenantId || "";
     const action = payload.action;
 
     // ── PII extraction helpers ───────────────────────────────────────────────
     // For ReferencePayload objects, `pii` is the real value used for the blind
     // index; `id` is the non-sensitive identifier stored in the payload.
-    const extractPii  = (v: string | ReferencePayload): string =>
+    const extractPii = (v: string | ReferencePayload): string =>
       typeof v === "object" ? v.pii : v;
-    const extractId   = (v: string | ReferencePayload): string =>
-      typeof v === "object" ? v.id  : v;
+    const extractId = (v: string | ReferencePayload): string =>
+      typeof v === "object" ? v.id : v;
 
     // Canonical string values used through the rest of log()
-    const actor  = extractPii(actorRaw);
+    const actor = extractPii(actorRaw);
     const target = extractPii(targetRaw);
+    const tenant = tenantRaw ? extractPii(tenantRaw) : "";
 
     // Merge instance telemetry configuration with log-level override
-    const logTelemetry = payload.telemetry 
+    const logTelemetry = payload.telemetry
       ? VolidatorClient.resolveTelemetryConfig({ ...this.telemetryConfig, ...payload.telemetry })
       : this.telemetryConfig;
 
@@ -372,8 +416,9 @@ export class VolidatorClient {
 
     // 2. IP Address
     if (logTelemetry.ip === "anonymize" && rawIp) {
-      // One-way salt and hash using client's encryptionKey as salt
-      context.ip = createHmac("sha256", this.encryptionKey)
+      // One-way salt and hash using client's active key as salt
+      const activeKey = this.keyring[this.activeKeyId];
+      context.ip = createHmac("sha256", activeKey)
         .update(rawIp)
         .digest("hex");
     } else if (logTelemetry.ip === "track" && rawIp) {
@@ -420,8 +465,9 @@ export class VolidatorClient {
     };
 
     // Apply to top-level fields
-    const safeActor  = applyRef(actorRaw,  "actor");
+    const safeActor = applyRef(actorRaw, "actor");
     const safeTarget = applyRef(targetRaw, "target");
+    const safeTenant = tenantRaw ? applyRef(tenantRaw, "tenant") : undefined;
 
     // Apply to metadata fields (supports "metadata.fieldName" notation)
     const rawMetadata = payload.metadata || {};
@@ -441,11 +487,15 @@ export class VolidatorClient {
 
     // Construct final plaintext payload before encrypting
     const enrichedPayload: any = {
-      actor:    safeActor,
+      actor: safeActor,
       action,
-      target:   safeTarget,
+      target: safeTarget,
       metadata: safeMetadata,
     };
+
+    if (safeTenant) {
+      enrichedPayload.tenant = safeTenant;
+    }
 
     if (Object.keys(context).length > 0) {
       enrichedPayload.context = context;
@@ -453,8 +503,11 @@ export class VolidatorClient {
 
     // Blind indexes are derived from the ORIGINAL PII values (not the ref IDs)
     // so searchability is fully preserved even when referenceKeys is used.
-    const actorBlindIndex = this.generateBlindIndex(actor);
-    const actionBlindIndex = this.generateBlindIndex(action);
+    const activeKeyBuffer = this.hashedKeyring[this.activeKeyId];
+    const actorBlindIndex = this.generateBlindIndex(actor, activeKeyBuffer);
+    const actionBlindIndex = this.generateBlindIndex(action, activeKeyBuffer);
+    const targetBlindIndex = this.generateBlindIndex(target, activeKeyBuffer);
+    const tenantBlindIndex = tenant ? this.generateBlindIndex(tenant, activeKeyBuffer) : undefined;
     const encryptedPayload = await this.encryptPayload(enrichedPayload);
 
     try {
@@ -464,7 +517,13 @@ export class VolidatorClient {
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ actorBlindIndex, actionBlindIndex, encryptedPayload }),
+        body: JSON.stringify({
+          actorBlindIndex,
+          actionBlindIndex,
+          targetBlindIndex,
+          tenantBlindIndex,
+          encryptedPayload
+        }),
       });
 
       return res.ok;
@@ -488,36 +547,63 @@ export class VolidatorClient {
 
     const {
       actorId,
+      targetId,
+      tenantId,
+      scope,
       expiresIn = "2h",
       dashboardUrl = "https://dash.volidator.com",
       hostOrigin,
     } = config;
 
-    // 1. Compute the blind index for this actor (same HMAC the SDK uses during ingestion)
-    const actorBlindIndex = this.generateBlindIndex(actorId);
+    // Check if at least one identity parameter is provided
+    if (!actorId && !targetId && !tenantId) {
+      throw new Error(
+        "At least one of actorId, targetId, or tenantId must be provided to generateEmbedToken()."
+      );
+    }
 
-    // 2. Resolve expiry to seconds
-    const expiresInSeconds = this.parseExpiry(expiresIn);
+    // Determine default query scope based on parameters
+    const defaultScope = scope || (tenantId ? "tenant" : "actor");
+
+    // 1. Compute blind indexes for all keys in the keyring
+    const actorBlindIndexes = actorId
+      ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(actorId, kb))
+      : undefined;
+    const targetBlindIndexes = targetId
+      ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(targetId, kb))
+      : undefined;
+    const tenantBlindIndexes = tenantId
+      ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(tenantId, kb))
+      : undefined;
+
+    // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security
+    const parsedExpiry = this.parseExpiry(expiresIn);
+    const expiresInSeconds = Math.min(parsedExpiry, 3600);
     const now = Math.floor(Date.now() / 1000);
 
     // 3. Build the JWT payload
-    const payload = {
+    const payload: Record<string, any> = {
       pid: this.projectId,
-      abi: actorBlindIndex,
+      scope: defaultScope,
       iat: now,
       exp: now + expiresInSeconds,
     };
 
+    if (actorBlindIndexes) payload.abi = actorBlindIndexes;
+    if (targetBlindIndexes) payload.tgb = targetBlindIndexes;
+    if (tenantBlindIndexes) payload.tbi = tenantBlindIndexes;
+
     // 4. Sign as HS256 JWT using the project's clientSecret (matches jose.jwtVerify on the server)
     const token = this.signHS256JWT(payload, this.clientSecret);
 
-    // 5. Append the encryptionKey as the URL hash fragment — browsers never send it to the server
-    // 6. Optionally append ?host= so the iframe can perform strict postMessage origin validation
-    //    for JIT Hydration (useVolidatorHydration). Never transmitted to Volidator's server.
+    // 5. Append the keyring as the URL hash fragment (v2:key2,v1:key1) — browsers never send it to the server
+    const keyringString = Object.entries(this.keyring)
+      .map(([id, key]) => `${id}:${key}`)
+      .join(",");
     const hostParam = hostOrigin
       ? `?host=${encodeURIComponent(hostOrigin)}`
       : "";
-    const embedUrl = `${dashboardUrl}/embed/${token}${hostParam}#${this.encryptionKey}`;
+    const embedUrl = `${dashboardUrl}/embed/${token}${hostParam}#${keyringString}`;
 
     return { token, embedUrl };
   }
@@ -561,7 +647,7 @@ export class VolidatorClient {
       case "m": return n * 60;
       case "h": return n * 3600;
       case "d": return n * 86400;
-      default:  return 7200;
+      default: return 7200;
     }
   }
 }
