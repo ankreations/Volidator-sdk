@@ -86,7 +86,7 @@ interface EmbedTokenConfig {
   /** The plaintext tenant identifier (e.g. "johnsbakery") */
   tenantId?: string;
   /** Scopes the logs to query. If not provided, defaults to 'actor' if actorId is provided, or 'tenant' if tenantId is provided. */
-  scope?: "actor" | "target" | "tenant" | "all";
+  scope?: "actor" | "target" | "tenant" | "all" | "auditor";
   /** Duration string: "30m", "2h", "7d". Defaults to "2h". */
   expiresIn?: string;
   /** Base URL of the Volidator dashboard. Defaults to "https://dash.volidator.com". */
@@ -151,6 +151,7 @@ export class VolidatorClient {
   private activeKeyId: string;
   private keyring: Record<string, string>;
   private hashedKeyring: Record<string, Buffer>;
+  public compliance: VolidatorCompliance;
 
   constructor(config: {
     apiKey: string;
@@ -212,6 +213,7 @@ export class VolidatorClient {
 
     // Default to 'standard' preset if nothing is provided
     this.telemetryConfig = VolidatorClient.resolveTelemetryConfig(config.telemetry || { preset: "standard" });
+    this.compliance = new VolidatorCompliance(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -555,15 +557,15 @@ export class VolidatorClient {
       hostOrigin,
     } = config;
 
-    // Check if at least one identity parameter is provided
-    if (!actorId && !targetId && !tenantId) {
+    // Determine default query scope based on parameters
+    const defaultScope = scope || (tenantId ? "tenant" : "actor");
+
+    // Check if at least one identity parameter is provided (bypassed for auditor scope)
+    if (defaultScope !== "auditor" && !actorId && !targetId && !tenantId) {
       throw new Error(
         "At least one of actorId, targetId, or tenantId must be provided to generateEmbedToken()."
       );
     }
-
-    // Determine default query scope based on parameters
-    const defaultScope = scope || (tenantId ? "tenant" : "actor");
 
     // 1. Compute blind indexes for all keys in the keyring
     const actorBlindIndexes = actorId
@@ -576,9 +578,11 @@ export class VolidatorClient {
       ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(tenantId, kb))
       : undefined;
 
-    // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security
+    // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security.
+    // Auditors are granted up to 7 days (604800s).
     const parsedExpiry = this.parseExpiry(expiresIn);
-    const expiresInSeconds = Math.min(parsedExpiry, 3600);
+    const maxExpiry = defaultScope === "auditor" ? 604800 : 3600;
+    const expiresInSeconds = Math.min(parsedExpiry, maxExpiry);
     const now = Math.floor(Date.now() / 1000);
 
     // 3. Build the JWT payload
@@ -649,5 +653,51 @@ export class VolidatorClient {
       case "d": return n * 86400;
       default: return 7200;
     }
+  }
+}
+
+export class VolidatorCompliance {
+  private client: VolidatorClient;
+
+  constructor(client: VolidatorClient) {
+    this.client = client;
+  }
+
+  private async logWithControl(
+    action: string,
+    soc2Control: string,
+    isoControl: string,
+    payload: Omit<LogPayload, "action">
+  ): Promise<boolean> {
+    const metadata = {
+      ...payload.metadata,
+      soc2_control: soc2Control,
+      iso27001: isoControl,
+    };
+    return this.client.log({
+      ...payload,
+      action,
+      metadata,
+    });
+  }
+
+  async accessRevoked(payload: Omit<LogPayload, "action">): Promise<boolean> {
+    return this.logWithControl("access.revoked", "CC6.1", "A.9.2.6", payload);
+  }
+
+  async accessGranted(payload: Omit<LogPayload, "action">): Promise<boolean> {
+    return this.logWithControl("access.granted", "CC6.1", "A.9.2.1", payload);
+  }
+
+  async dataExported(payload: Omit<LogPayload, "action">): Promise<boolean> {
+    return this.logWithControl("data.exported", "CC6.6", "A.12.4.1", payload);
+  }
+
+  async systemConfigChanged(payload: Omit<LogPayload, "action">): Promise<boolean> {
+    return this.logWithControl("system.config_changed", "CC6.2", "A.12.1.2", payload);
+  }
+
+  async mfaEnabled(payload: Omit<LogPayload, "action">): Promise<boolean> {
+    return this.logWithControl("mfa.enabled", "CC6.3", "A.9.4.2", payload);
   }
 }
