@@ -1,4 +1,3 @@
-import { createHmac, createHash, createCipheriv, randomBytes } from "crypto";
 
 // ---------------------------------------------------------------------------
 // Reference-Based Redaction Types
@@ -150,7 +149,7 @@ export class VolidatorClient {
   // Keyring properties
   private activeKeyId: string;
   private keyring: Record<string, string>;
-  private hashedKeyring: Record<string, Buffer>;
+  private hashedKeyring: Record<string, Uint8Array>;
   public compliance: VolidatorCompliance;
 
   constructor(config: {
@@ -205,11 +204,8 @@ export class VolidatorClient {
       throw new Error(`Active key ID '${this.activeKeyId}' must exist in the keyring.`);
     }
 
-    // Derive 256-bit keys for all active keys in the keyring
+    // Keys will be hashed lazily via WebCrypto in _getHashedKey
     this.hashedKeyring = {};
-    for (const [id, key] of Object.entries(this.keyring)) {
-      this.hashedKeyring[id] = createHash("sha256").update(key).digest();
-    }
 
     // Default to 'standard' preset if nothing is provided
     this.telemetryConfig = VolidatorClient.resolveTelemetryConfig(config.telemetry || { preset: "standard" });
@@ -326,10 +322,27 @@ export class VolidatorClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Blind Index — deterministic HMAC-SHA256 for searchable encrypted fields
+  // Blind Index & Key Hashing (WebCrypto)
   // ---------------------------------------------------------------------------
-  private generateBlindIndex(value: string, keyBuffer: Buffer): string {
-    return createHmac("sha256", keyBuffer).update(value).digest("hex");
+  private async _getHashedKey(id: string): Promise<Uint8Array> {
+    if (this.hashedKeyring[id]) return this.hashedKeyring[id];
+    const rawKey = this.keyring[id];
+    const buf = new TextEncoder().encode(rawKey);
+    const hash = await globalThis.crypto.subtle.digest("SHA-256", buf);
+    this.hashedKeyring[id] = new Uint8Array(hash);
+    return this.hashedKeyring[id];
+  }
+
+  private async generateBlindIndex(value: string, keyBuffer: Uint8Array): Promise<string> {
+    const key = await globalThis.crypto.subtle.importKey(
+      "raw", keyBuffer as unknown as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+    );
+    const signature = await globalThis.crypto.subtle.sign(
+      "HMAC", key, new TextEncoder().encode(value)
+    );
+    return Array.from(new Uint8Array(signature))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
   }
 
   // ---------------------------------------------------------------------------
@@ -338,19 +351,29 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   private async encryptPayload(payload: object): Promise<string> {
     const text = JSON.stringify(payload);
-    const iv = randomBytes(12);
-    const activeHashedKey = this.hashedKeyring[this.activeKeyId];
-    const cipher = createCipheriv("aes-256-gcm", activeHashedKey, iv);
+    const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+    const activeHashedKey = await this._getHashedKey(this.activeKeyId);
 
-    const ciphertext = Buffer.concat([
-      cipher.update(text, "utf8"),
-      cipher.final(),
-    ]);
-    const tag = cipher.getAuthTag();
+    const cryptoKey = await globalThis.crypto.subtle.importKey(
+      "raw", activeHashedKey as unknown as BufferSource, { name: "AES-GCM" }, false, ["encrypt"]
+    );
 
-    const finalBuffer = Buffer.concat([iv, ciphertext, tag]);
-    // Prepend active key ID version prefix
-    return `${this.activeKeyId}:${finalBuffer.toString("base64")}`;
+    const encryptedBuffer = await globalThis.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(text)
+    );
+
+    const finalBuffer = new Uint8Array(iv.length + encryptedBuffer.byteLength);
+    finalBuffer.set(iv, 0);
+    finalBuffer.set(new Uint8Array(encryptedBuffer), iv.length);
+
+    // Convert to base64 safely for edges
+    let binary = '';
+    const len = finalBuffer.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(finalBuffer[i]);
+    }
+    const base64 = btoa(binary);
+    return `${this.activeKeyId}:${base64}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -420,9 +443,7 @@ export class VolidatorClient {
     if (logTelemetry.ip === "anonymize" && rawIp) {
       // One-way salt and hash using client's active key as salt
       const activeKey = this.keyring[this.activeKeyId];
-      context.ip = createHmac("sha256", activeKey)
-        .update(rawIp)
-        .digest("hex");
+      context.ip = await this.generateBlindIndex(rawIp, await this._getHashedKey(this.activeKeyId));
     } else if (logTelemetry.ip === "track" && rawIp) {
       context.ip = rawIp;
     }
@@ -505,11 +526,11 @@ export class VolidatorClient {
 
     // Blind indexes are derived from the ORIGINAL PII values (not the ref IDs)
     // so searchability is fully preserved even when referenceKeys is used.
-    const activeKeyBuffer = this.hashedKeyring[this.activeKeyId];
-    const actorBlindIndex = this.generateBlindIndex(actor, activeKeyBuffer);
-    const actionBlindIndex = this.generateBlindIndex(action, activeKeyBuffer);
-    const targetBlindIndex = this.generateBlindIndex(target, activeKeyBuffer);
-    const tenantBlindIndex = tenant ? this.generateBlindIndex(tenant, activeKeyBuffer) : undefined;
+    const activeKeyBuffer = await this._getHashedKey(this.activeKeyId);
+    const actorBlindIndex = await this.generateBlindIndex(actor, activeKeyBuffer);
+    const actionBlindIndex = await this.generateBlindIndex(action, activeKeyBuffer);
+    const targetBlindIndex = await this.generateBlindIndex(target, activeKeyBuffer);
+    const tenantBlindIndex = tenant ? await this.generateBlindIndex(tenant, activeKeyBuffer) : undefined;
     const encryptedPayload = await this.encryptPayload(enrichedPayload);
 
     try {
@@ -569,13 +590,13 @@ export class VolidatorClient {
 
     // 1. Compute blind indexes for all keys in the keyring
     const actorBlindIndexes = actorId
-      ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(actorId, kb))
+      ? await Promise.all(Object.keys(this.keyring).map(async id => this.generateBlindIndex(actorId, await this._getHashedKey(id))))
       : undefined;
     const targetBlindIndexes = targetId
-      ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(targetId, kb))
+      ? await Promise.all(Object.keys(this.keyring).map(async id => this.generateBlindIndex(targetId, await this._getHashedKey(id))))
       : undefined;
     const tenantBlindIndexes = tenantId
-      ? Object.values(this.hashedKeyring).map(kb => this.generateBlindIndex(tenantId, kb))
+      ? await Promise.all(Object.keys(this.keyring).map(async id => this.generateBlindIndex(tenantId, await this._getHashedKey(id))))
       : undefined;
 
     // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security.
@@ -598,7 +619,7 @@ export class VolidatorClient {
     if (tenantBlindIndexes) payload.tbi = tenantBlindIndexes;
 
     // 4. Sign as HS256 JWT using the project's clientSecret (matches jose.jwtVerify on the server)
-    const token = this.signHS256JWT(payload, this.clientSecret);
+    const token = await this.signHS256JWT(payload, this.clientSecret);
 
     // 5. Append the keyring as the URL hash fragment (v2:key2,v1:key1) — browsers never send it to the server
     const keyringString = Object.entries(this.keyring)
@@ -616,21 +637,30 @@ export class VolidatorClient {
   // Private: manual HS256 JWT signing (no external dependency)
   // Produces output identical to jose.SignJWT(...).sign(key) with HS256
   // ---------------------------------------------------------------------------
-  private signHS256JWT(payload: object, secret: string): string {
+  private async signHS256JWT(payload: object, secret: string): Promise<string> {
     const header = { alg: "HS256", typ: "JWT" };
 
     const encode = (obj: object) =>
-      Buffer.from(JSON.stringify(obj))
-        .toString("base64")
+      btoa(JSON.stringify(obj))
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
         .replace(/=/g, "");
 
     const unsigned = `${encode(header)}.${encode(payload)}`;
 
-    const signature = createHmac("sha256", secret)
-      .update(unsigned)
-      .digest("base64")
+    const key = await globalThis.crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(secret) as unknown as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+    );
+    const signatureBuffer = await globalThis.crypto.subtle.sign(
+      "HMAC", key, new TextEncoder().encode(unsigned)
+    );
+
+    let binary = '';
+    const arr = new Uint8Array(signatureBuffer);
+    for (let i = 0; i < arr.byteLength; i++) {
+      binary += String.fromCharCode(arr[i]);
+    }
+    const signature = btoa(binary)
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=/g, "");
