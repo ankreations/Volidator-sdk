@@ -77,6 +77,16 @@ export interface LogPayload {
   req?: any; // support passing the HTTP request object directly
 }
 
+interface EmbedTokenViewConfig {
+  /** The columns to show in the table, e.g. ["actor", "action", "metadata.region", "createdAt"] */
+  columns?: string[];
+  /** Default search filters loaded on mount */
+  defaultFilter?: {
+    search?: string;
+    action?: string;
+  };
+}
+
 interface EmbedTokenConfig {
   /** The plaintext actor identifier (e.g. "usr_123") */
   actorId?: string;
@@ -97,6 +107,8 @@ interface EmbedTokenConfig {
    * origin validation for JIT Hydration.
    */
   hostOrigin?: string;
+  /** Presentation configurations signed into the JWT to enforce specific log table columns and filters. */
+  view?: EmbedTokenViewConfig;
 }
 
 interface EmbedTokenResult {
@@ -606,6 +618,7 @@ export class VolidatorClient {
       expiresIn = "2h",
       dashboardUrl = "https://dash.volidator.com",
       hostOrigin,
+      view,
     } = config;
 
     // Determine default query scope based on parameters
@@ -647,6 +660,33 @@ export class VolidatorClient {
     if (actorBlindIndexes) payload.abi = actorBlindIndexes;
     if (targetBlindIndexes) payload.tgb = targetBlindIndexes;
     if (tenantBlindIndexes) payload.tbi = tenantBlindIndexes;
+
+    // Compresses presentation config to minimize cookie/header footprint
+    if (view) {
+      const compressed: Record<string, any> = {};
+      if (Array.isArray(view.columns)) {
+        compressed.cols = view.columns.map((col) => {
+          if (col === "createdAt") return "cat";
+          if (col === "actor") return "act";
+          if (col === "action") return "acn";
+          if (col === "target") return "tgt";
+          if (col.startsWith("metadata.")) {
+            return `m.${col.slice(9)}`;
+          }
+          return col;
+        });
+      }
+      if (view.defaultFilter) {
+        compressed.flt = {};
+        if (view.defaultFilter.search !== undefined) {
+          compressed.flt.q = view.defaultFilter.search;
+        }
+        if (view.defaultFilter.action !== undefined) {
+          compressed.flt.act = view.defaultFilter.action;
+        }
+      }
+      payload.view = compressed;
+    }
 
     // 4. Sign as HS256 JWT using the project's clientSecret (matches jose.jwtVerify on the server)
     const token = await this.signHS256JWT(payload, this.clientSecret);
