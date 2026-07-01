@@ -508,7 +508,7 @@ export class VolidatorClient {
     }
 
     const limitDepth = (obj: any, currentDepth = 1): any => {
-      if (currentDepth > 3) {
+      if (currentDepth > 5) {
         return "[Truncated - Depth Exceeded]";
       }
       if (typeof obj !== "object" || obj === null) {
