@@ -384,20 +384,24 @@ export class VolidatorClient {
     const actorRaw = payload.actor || payload.actorId || "unknown";
     const targetRaw = payload.target || payload.targetId || "unknown";
     const tenantRaw = payload.tenant || payload.tenantId || "";
-    const action = payload.action;
 
-    // ── PII extraction helpers ───────────────────────────────────────────────
-    // For ReferencePayload objects, `pii` is the real value used for the blind
-    // index; `id` is the non-sensitive identifier stored in the payload.
+    const truncate = (str: string, maxLen: number): string => {
+      if (str.length > maxLen) {
+        return str.slice(0, maxLen) + "...";
+      }
+      return str;
+    };
+
     const extractPii = (v: string | ReferencePayload): string =>
       typeof v === "object" ? v.pii : v;
     const extractId = (v: string | ReferencePayload): string =>
       typeof v === "object" ? v.id : v;
 
     // Canonical string values used through the rest of log()
-    const actor = extractPii(actorRaw);
-    const target = extractPii(targetRaw);
-    const tenant = tenantRaw ? extractPii(tenantRaw) : "";
+    const actor = truncate(extractPii(actorRaw), 255);
+    const target = truncate(extractPii(targetRaw), 255);
+    const tenant = tenantRaw ? truncate(extractPii(tenantRaw), 255) : "";
+    const action = truncate(payload.action, 255);
 
     // Merge instance telemetry configuration with log-level override
     const logTelemetry = payload.telemetry
@@ -453,7 +457,7 @@ export class VolidatorClient {
       if (rawUa) {
         context.device = this.parseUserAgent(rawUa);
         if (logTelemetry.userAgent === "track") {
-          context.userAgent = rawUa;
+          context.userAgent = truncate(rawUa, 1000);
         }
       } else if (payloadCtx.device) {
         context.device = payloadCtx.device;
@@ -487,11 +491,6 @@ export class VolidatorClient {
       return scrub(extractPii(rawValue), key);
     };
 
-    // Apply to top-level fields
-    const safeActor = applyRef(actorRaw, "actor");
-    const safeTarget = applyRef(targetRaw, "target");
-    const safeTenant = tenantRaw ? applyRef(tenantRaw, "tenant") : undefined;
-
     // Apply to metadata fields (supports "metadata.fieldName" notation)
     const rawMetadata = payload.metadata || {};
     const safeMetadata: Record<string, any> = {};
@@ -508,12 +507,43 @@ export class VolidatorClient {
       }
     }
 
+    const limitDepth = (obj: any, currentDepth = 1): any => {
+      if (currentDepth > 3) {
+        return "[Truncated - Depth Exceeded]";
+      }
+      if (typeof obj !== "object" || obj === null) {
+        if (typeof obj === "string") {
+          return truncate(obj, 1000);
+        }
+        return obj;
+      }
+      if (Array.isArray(obj)) {
+        return obj.map(item => limitDepth(item, currentDepth + 1));
+      }
+      const result: Record<string, any> = {};
+      for (const [key, val] of Object.entries(obj)) {
+        result[key] = limitDepth(val, currentDepth + 1);
+      }
+      return result;
+    };
+
+    const processedMetadata = limitDepth(safeMetadata);
+    const serializedMeta = JSON.stringify(processedMetadata);
+    if (serializedMeta.length > 10240) {
+      throw new Error("Metadata size exceeds maximum allowed limit of 10KB.");
+    }
+
+    // Apply to top-level fields
+    const safeActor = applyRef(actorRaw, "actor");
+    const safeTarget = applyRef(targetRaw, "target");
+    const safeTenant = tenantRaw ? applyRef(tenantRaw, "tenant") : undefined;
+
     // Construct final plaintext payload before encrypting
     const enrichedPayload: any = {
       actor: safeActor,
       action,
       target: safeTarget,
-      metadata: safeMetadata,
+      metadata: processedMetadata,
     };
 
     if (safeTenant) {
