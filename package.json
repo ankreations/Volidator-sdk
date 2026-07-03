@@ -1,13 +1,74 @@
 {
   "name": "@volidator/node",
   "version": "1.0.0",
-  "private": true,
-  "main": "./index.ts",
-  "types": "./index.ts",
-  "dependencies": {
-    "@types/node": "^20.0.0"
+  "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and edge runtimes",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./next": {
+      "types": "./dist/middleware/next.d.ts",
+      "import": "./dist/middleware/next.js",
+      "require": "./dist/middleware/next.cjs"
+    },
+    "./clerk": {
+      "types": "./dist/plugins/clerk.d.ts",
+      "import": "./dist/plugins/clerk.js",
+      "require": "./dist/plugins/clerk.cjs"
+    },
+    "./universal": {
+      "types": "./dist/plugins/universal.d.ts",
+      "import": "./dist/plugins/universal.js",
+      "require": "./dist/plugins/universal.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "typescript": "^5.0.0"
-  }
+    "@types/node": "^20.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.9"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ankreations/volidator"
+  },
+  "homepage": "https://volidator.com",
+  "bugs": {
+    "url": "https://github.com/ankreations/volidator/issues"
+  },
+  "keywords": [
+    "audit-log",
+    "zero-knowledge",
+    "encryption",
+    "compliance",
+    "soc2",
+    "gdpr",
+    "hipaa",
+    "typescript",
+    "cloudflare-workers",
+    "nextjs"
+  ]
 }

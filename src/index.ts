@@ -457,8 +457,7 @@ export class VolidatorClient {
 
     // 2. IP Address
     if (logTelemetry.ip === "anonymize" && rawIp) {
-      // One-way salt and hash using client's active key as salt
-      const activeKey = this.keyring[this.activeKeyId];
+      // One-way salt and hash using the active key as the HMAC salt
       context.ip = await this.generateBlindIndex(rawIp, await this._getHashedKey(this.activeKeyId));
     } else if (logTelemetry.ip === "track" && rawIp) {
       context.ip = rawIp;
