@@ -194,3 +194,57 @@ describe("extractContext — Node.js IncomingMessage headers", () => {
     expect(ctx.userAgent).toBe("");
   });
 });
+
+// ---------------------------------------------------------------------------
+// extractTraceContext — W3C traceparent headers
+// ---------------------------------------------------------------------------
+
+describe("extractTraceContext — W3C traceparent headers", () => {
+  it("extracts traceId and spanId from valid traceparent header", () => {
+    const req = {
+      headers: {
+        traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      },
+    };
+    const traceCtx = VolidatorClient.extractTraceContext(req);
+    expect(traceCtx.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(traceCtx.spanId).toBe("00f067aa0ba902b7");
+  });
+
+  it("handles standard Headers get interface", () => {
+    const headersMap = new Map([
+      ["traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"]
+    ]);
+    const req = {
+      headers: {
+        get: (name: string) => headersMap.get(name.toLowerCase()) || null
+      }
+    };
+    const traceCtx = VolidatorClient.extractTraceContext(req);
+    expect(traceCtx.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+    expect(traceCtx.spanId).toBe("00f067aa0ba902b7");
+  });
+
+  it("returns empty object for invalid/malformed traceparent header", () => {
+    const req = {
+      headers: {
+        traceparent: "invalid-traceparent-format",
+      },
+    };
+    const traceCtx = VolidatorClient.extractTraceContext(req);
+    expect(traceCtx).toEqual({});
+  });
+
+  it("returns empty object for missing traceparent header", () => {
+    const req = {
+      headers: {},
+    };
+    const traceCtx = VolidatorClient.extractTraceContext(req);
+    expect(traceCtx).toEqual({});
+  });
+
+  it("handles null/undefined request gracefully", () => {
+    const traceCtx = VolidatorClient.extractTraceContext(null);
+    expect(traceCtx).toEqual({});
+  });
+});

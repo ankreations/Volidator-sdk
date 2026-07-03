@@ -1,4 +1,3 @@
-
 // ---------------------------------------------------------------------------
 // Reference-Based Redaction Types
 // ---------------------------------------------------------------------------
@@ -12,6 +11,7 @@
  *   actor: { id: "usr_890", pii: "john@company.com" }
  *   // stored:      "[REF:usr_890]"
  *   // blind index: HMAC("john@company.com")
+ *   // telemetry:  extracted automatically or passed in context
  */
 export type ReferencePayload = { id: string; pii: string };
 
@@ -68,6 +68,20 @@ export interface LogPayload {
   tenant?: string | ReferencePayload;
   tenantId?: string; // support tenantId as alias (plain string only)
   /**
+   * Groups all events belonging to a single agent run, workflow execution,
+   * or request trace. Passed through as a blind index so the server can
+   * filter by run without decrypting payloads.
+   */
+  traceId?: string;
+  /**
+   * Identifies this specific event within the trace (analogous to OTel spanId).
+   */
+  spanId?: string;
+  /**
+   * The spanId of the event that caused this one (parentSpanId).
+   */
+  parentSpanId?: string;
+  /**
    * Arbitrary metadata. Values for keys listed in `referenceKeys` must be
    * `ReferencePayload` objects: { id: "ref_id", pii: "sensitive_value" }.
    */
@@ -98,16 +112,11 @@ interface EmbedTokenConfig {
   scope?: "actor" | "target" | "tenant" | "all" | "auditor";
   /** Duration string: "30m", "2h", "7d". Defaults to "2h". */
   expiresIn?: string;
-  /** Base URL of the Volidator dashboard. Defaults to "https://dash.volidator.com". */
+  /** Custom dashboard origin URL override */
   dashboardUrl?: string;
-  /**
-   * The exact origin of the parent application that will embed this iframe
-   * (e.g. "https://app.yourcompany.com"). When provided, it is appended as
-   * a `?host=` query parameter so the iframe can perform strict postMessage
-   * origin validation for JIT Hydration.
-   */
+  /** Optional origin of host app for iframe postMessage domain validation */
   hostOrigin?: string;
-  /** Presentation configurations signed into the JWT to enforce specific log table columns and filters. */
+  /** Custom column presentation and default filters */
   view?: EmbedTokenViewConfig;
 }
 
@@ -125,44 +134,19 @@ export class VolidatorClient {
   private projectId?: string;
   private clientSecret?: string;
 
-  /**
-   * Keys whose values should be scrubbed (replaced with [REDACTED:<key>]) before encryption.
-   *
-   * Supported scopes:
-   *   - Top-level fields: "actor", "target"
-   *   - Metadata fields:  "metadata.email", "metadata.ssn", "metadata.phone", etc.
-   *
-   * Example:
-   *   redactKeys: ["actor", "metadata.email", "metadata.ssn"]
-   *
-   * For dashboard-readable names, prefer `referenceKeys` which stores a non-sensitive
-   * reference ID ([REF:id]) instead of [REDACTED], enabling JIT Hydration in the embed.
-   */
   private redactKeys: string[];
-
-  /**
-   * Keys whose values use Reference-Based Redaction (JIT Hydration).
-   *
-   * Unlike `redactKeys` which stores [REDACTED:<key>], `referenceKeys` stores
-   * [REF:<id>] — a non-sensitive internal identifier. The dashboard resolves
-   * this reference to a display name via a postMessage handshake with the
-   * parent application at render time. PII never reaches Volidator's servers.
-   *
-   * Fields in this list MUST be supplied as `ReferencePayload` objects:
-   *   actor: { id: "usr_890", pii: "john@company.com" }
-   *
-   * The `pii` field is used ONLY for blind index computation, then discarded.
-   * The `id` field is stored in the encrypted payload as [REF:usr_890].
-   *
-   * Supported scopes: same as redactKeys — "actor", "target", "metadata.fieldName".
-   */
   private referenceKeys: string[];
 
   // Keyring properties
   private activeKeyId: string;
   private keyring: Record<string, string>;
   private hashedKeyring: Record<string, Uint8Array>;
+  
+  // Custom limit for metadata object serialization size
+  private maxMetadataSize: number;
+
   public compliance: VolidatorCompliance;
+  public agent: VolidatorAgent;
 
   constructor(config: {
     apiKey: string;
@@ -176,18 +160,16 @@ export class VolidatorClient {
     telemetry?: TelemetryConfig;
     /**
      * Fields to replace with [REDACTED:key] before encryption.
-     * Supports "actor", "target", and "metadata.fieldName".
-     * The dashboard will display [REDACTED] for these fields.
      */
     redactKeys?: string[];
     /**
      * Fields to replace with [REF:id] before encryption (JIT Hydration).
-     * Supports "actor", "target", and "metadata.fieldName".
-     * Fields must be supplied as { id, pii } objects in log() calls.
-     * The dashboard resolves [REF:id] to display names at render time.
-     * See: https://docs.volidator.com/guides/jit-hydration/
      */
     referenceKeys?: string[];
+    /**
+     * Custom maximum size for serialized metadata in bytes. Defaults to 10240 (10KB).
+     */
+    maxMetadataSize?: number;
   }) {
     this.apiKey = config.apiKey;
     this.endpoint = config.endpoint || "https://ingestion.volidator.com";
@@ -195,6 +177,7 @@ export class VolidatorClient {
     this.clientSecret = config.clientSecret;
     this.redactKeys = config.redactKeys || [];
     this.referenceKeys = config.referenceKeys || [];
+    this.maxMetadataSize = config.maxMetadataSize || 10240;
 
     // Parse encryption keys & keyring
     if (config.keyring && config.activeEncryptionKeyId) {
@@ -222,6 +205,7 @@ export class VolidatorClient {
     // Default to 'standard' preset if nothing is provided
     this.telemetryConfig = VolidatorClient.resolveTelemetryConfig(config.telemetry || { preset: "standard" });
     this.compliance = new VolidatorCompliance(this);
+    this.agent = new VolidatorAgent(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -257,6 +241,28 @@ export class VolidatorClient {
         city: getHeader("cf-ipcity") || getHeader("x-vercel-ip-city") || "",
       }
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // OpenTelemetry W3C traceparent context parser
+  // ---------------------------------------------------------------------------
+  static extractTraceContext(req: any): { traceId?: string; spanId?: string } {
+    if (!req) return {};
+    const getHeader = (name: string): string => {
+      if (typeof req.headers?.get === "function") {
+        return req.headers.get(name) || "";
+      }
+      if (req.headers && typeof req.headers === "object") {
+        return req.headers[name] || req.headers[name.toLowerCase()] || "";
+      }
+      return "";
+    };
+
+    const traceparent = getHeader("traceparent");
+    if (!traceparent) return {};
+    const parts = traceparent.split("-");
+    if (parts.length !== 4) return {};
+    return { traceId: parts[1], spanId: parts[2] };
   }
 
   private static resolveTelemetryConfig(config: TelemetryConfig): Required<Omit<TelemetryConfig, "preset">> {
@@ -389,10 +395,9 @@ export class VolidatorClient {
   }
 
   // ---------------------------------------------------------------------------
-  // log() — Encrypt and ingest a single audit event
+  // prepareLogEntry() — Prepares, redacts, and encrypts a single log entry payload
   // ---------------------------------------------------------------------------
-  async log(payload: LogPayload): Promise<boolean> {
-    // Resolve actor / target — may be a plain string or a ReferencePayload
+  private async prepareLogEntry(payload: LogPayload, maxMetaOverride?: number) {
     const actorRaw = payload.actor || payload.actorId || "unknown";
     const targetRaw = payload.target || payload.targetId || "unknown";
     const tenantRaw = payload.tenant || payload.tenantId || "";
@@ -409,13 +414,11 @@ export class VolidatorClient {
     const extractId = (v: string | ReferencePayload): string =>
       typeof v === "object" ? v.id : v;
 
-    // Canonical string values used through the rest of log()
     const actor = truncate(extractPii(actorRaw), 255);
     const target = truncate(extractPii(targetRaw), 255);
     const tenant = tenantRaw ? truncate(extractPii(tenantRaw), 255) : "";
     const action = truncate(payload.action, 255);
 
-    // Merge instance telemetry configuration with log-level override
     const logTelemetry = payload.telemetry
       ? VolidatorClient.resolveTelemetryConfig({ ...this.telemetryConfig, ...payload.telemetry })
       : this.telemetryConfig;
@@ -441,13 +444,11 @@ export class VolidatorClient {
     const rawIp = payloadCtx.ip || "";
     const rawUa = payloadCtx.userAgent || "";
 
-    // 1. Location
     if (logTelemetry.location) {
       context.location = {};
       if (payloadCtx.location) {
         context.location.country = payloadCtx.location.country || "";
         context.location.region = payloadCtx.location.region || "";
-        // Standard drops city level, Full preset keeps city level
         const isFull = payload.telemetry?.preset === "full" || (!payload.telemetry && this.telemetryConfig.ip === "track");
         if (logTelemetry.ip === "track" || isFull) {
           context.location.city = payloadCtx.location.city || "";
@@ -455,15 +456,12 @@ export class VolidatorClient {
       }
     }
 
-    // 2. IP Address
     if (logTelemetry.ip === "anonymize" && rawIp) {
-      // One-way salt and hash using the active key as the HMAC salt
       context.ip = await this.generateBlindIndex(rawIp, await this._getHashedKey(this.activeKeyId));
     } else if (logTelemetry.ip === "track" && rawIp) {
       context.ip = rawIp;
     }
 
-    // 3. User-Agent
     if (logTelemetry.userAgent !== "skip") {
       if (rawUa) {
         context.device = this.parseUserAgent(rawUa);
@@ -475,43 +473,24 @@ export class VolidatorClient {
       }
     }
 
-    // ── PII/PHI Redaction & Reference Substitution ───────────────────────────
-    // Both redactKeys and referenceKeys are applied BEFORE building the encrypted
-    // payload. Blind indexes are always computed from the original PII value so
-    // filtered queries still work; only the stored plaintext is scrubbed/ref'd.
-
-    /**
-     * scrub() — classic static redaction.
-     * Replaces the value with [REDACTED:<key>] for fields in redactKeys.
-     */
     const scrub = (value: string, key: string): string =>
       this.redactKeys.includes(key) ? `[REDACTED:${key}]` : value;
 
-    /**
-     * ref() — reference-based redaction (JIT Hydration).
-     * For fields in referenceKeys, writes [REF:<id>] using the non-sensitive
-     * internal identifier. The `pii` value was already extracted above and
-     * used for the blind index — it is not stored anywhere.
-     */
     const applyRef = (rawValue: string | ReferencePayload, key: string): string => {
       if (this.referenceKeys.includes(key)) {
         const id = extractId(rawValue);
         return `[REF:${id}]`;
       }
-      // Fall through to standard scrub (which is a no-op if key isn't in redactKeys)
       return scrub(extractPii(rawValue), key);
     };
 
-    // Apply to metadata fields (supports "metadata.fieldName" notation)
     const rawMetadata = payload.metadata || {};
     const safeMetadata: Record<string, any> = {};
     for (const [k, v] of Object.entries(rawMetadata)) {
       const metaKey = `metadata.${k}`;
       if (this.referenceKeys.includes(metaKey) && typeof v === "object" && v !== null && "id" in v) {
-        // Reference payload: store [REF:id]
         safeMetadata[k] = `[REF:${(v as ReferencePayload).id}]`;
       } else if (this.redactKeys.includes(metaKey) && typeof v === "string") {
-        // Classic redaction: store [REDACTED:fieldName]
         safeMetadata[k] = `[REDACTED:${k}]`;
       } else {
         safeMetadata[k] = v;
@@ -540,16 +519,15 @@ export class VolidatorClient {
 
     const processedMetadata = limitDepth(safeMetadata);
     const serializedMeta = JSON.stringify(processedMetadata);
-    if (serializedMeta.length > 10240) {
-      throw new Error("Metadata size exceeds maximum allowed limit of 10KB.");
+    const maxMetaLimit = maxMetaOverride || this.maxMetadataSize;
+    if (serializedMeta.length > maxMetaLimit) {
+      throw new Error(`Metadata size exceeds maximum allowed limit of ${maxMetaLimit / 1024}KB.`);
     }
 
-    // Apply to top-level fields
     const safeActor = applyRef(actorRaw, "actor");
     const safeTarget = applyRef(targetRaw, "target");
     const safeTenant = tenantRaw ? applyRef(tenantRaw, "tenant") : undefined;
 
-    // Construct final plaintext payload before encrypting
     const enrichedPayload: any = {
       actor: safeActor,
       action,
@@ -565,15 +543,52 @@ export class VolidatorClient {
       enrichedPayload.context = context;
     }
 
-    // Blind indexes are derived from the ORIGINAL PII values (not the ref IDs)
-    // so searchability is fully preserved even when referenceKeys is used.
+    // Auto-extract trace contexts
+    let traceId = payload.traceId;
+    let spanId = payload.spanId;
+    let parentSpanId = payload.parentSpanId;
+
+    if (payload.req) {
+      const extractedTrace = VolidatorClient.extractTraceContext(payload.req);
+      if (!traceId && extractedTrace.traceId) {
+        traceId = extractedTrace.traceId;
+      }
+      if (!spanId && extractedTrace.spanId) {
+        spanId = extractedTrace.spanId;
+      }
+    }
+
+    if (spanId) {
+      enrichedPayload.spanId = spanId;
+    }
+    if (parentSpanId) {
+      enrichedPayload.parentSpanId = parentSpanId;
+    }
+
     const activeKeyBuffer = await this._getHashedKey(this.activeKeyId);
     const actorBlindIndex = await this.generateBlindIndex(actor, activeKeyBuffer);
     const actionBlindIndex = await this.generateBlindIndex(action, activeKeyBuffer);
     const targetBlindIndex = await this.generateBlindIndex(target, activeKeyBuffer);
     const tenantBlindIndex = tenant ? await this.generateBlindIndex(tenant, activeKeyBuffer) : undefined;
+    const traceBlindIndex = traceId ? await this.generateBlindIndex(traceId, activeKeyBuffer) : undefined;
+
     const encryptedPayload = await this.encryptPayload(enrichedPayload);
 
+    return {
+      actorBlindIndex,
+      actionBlindIndex,
+      targetBlindIndex,
+      tenantBlindIndex,
+      traceBlindIndex,
+      encryptedPayload,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // log() — Encrypt and ingest a single audit event
+  // ---------------------------------------------------------------------------
+  async log(payload: LogPayload, maxMetaOverride?: number): Promise<boolean> {
+    const entry = await this.prepareLogEntry(payload, maxMetaOverride);
     try {
       const res = await fetch(`${this.endpoint}/v1/log`, {
         method: "POST",
@@ -581,13 +596,7 @@ export class VolidatorClient {
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          actorBlindIndex,
-          actionBlindIndex,
-          targetBlindIndex,
-          tenantBlindIndex,
-          encryptedPayload
-        }),
+        body: JSON.stringify(entry),
       });
 
       return res.ok;
@@ -598,10 +607,60 @@ export class VolidatorClient {
   }
 
   // ---------------------------------------------------------------------------
+  // logBatch() — Bulk encrypt and ingest a batch of up to 100 audit events
+  // ---------------------------------------------------------------------------
+  async logBatch(payloads: LogPayload[], maxMetaOverride?: number): Promise<{ accepted: number; rejected: number }> {
+    if (!Array.isArray(payloads) || payloads.length === 0) {
+      return { accepted: 0, rejected: 0 };
+    }
+
+    // Cap batch size at 100
+    const batch = payloads.slice(0, 100);
+    const preparedEntries: any[] = [];
+    let rejected = payloads.length - batch.length;
+
+    const results = await Promise.allSettled(
+      batch.map(p => this.prepareLogEntry(p, maxMetaOverride))
+    );
+
+    for (const res of results) {
+      if (res.status === "fulfilled") {
+        preparedEntries.push(res.value);
+      } else {
+        rejected++;
+        console.error(`[Volidator] Failed to prepare batch entry: ${res.reason?.message}`);
+      }
+    }
+
+    if (preparedEntries.length === 0) {
+      return { accepted: 0, rejected };
+    }
+
+    try {
+      const res = await fetch(`${this.endpoint}/v1/logs/batch`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ logs: preparedEntries }),
+      });
+
+      if (res.ok) {
+        return { accepted: preparedEntries.length, rejected };
+      } else {
+        console.error(`[Volidator] Batch ingestion endpoint returned status: ${res.status}`);
+        return { accepted: 0, rejected: rejected + preparedEntries.length };
+      }
+    } catch (err: any) {
+      console.error(`[Volidator] Failed to send log batch: ${err.message}`);
+      return { accepted: 0, rejected: rejected + preparedEntries.length };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // generateEmbedToken() — Sign a HS256 JWT for the embeddable dashboard widget
   // ---------------------------------------------------------------------------
-  // Requires projectId and clientSecret in the constructor config.
-  // The returned embedUrl can be dropped directly into an <iframe src="...">.
   async generateEmbedToken(config: EmbedTokenConfig): Promise<EmbedTokenResult> {
     if (!this.projectId || !this.clientSecret) {
       throw new Error(
@@ -642,7 +701,6 @@ export class VolidatorClient {
       : undefined;
 
     // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security.
-    // Auditors are granted up to 7 days (604800s).
     const parsedExpiry = this.parseExpiry(expiresIn);
     const maxExpiry = defaultScope === "auditor" ? 604800 : 3600;
     const expiresInSeconds = Math.min(parsedExpiry, maxExpiry);
@@ -687,10 +745,10 @@ export class VolidatorClient {
       payload.view = compressed;
     }
 
-    // 4. Sign as HS256 JWT using the project's clientSecret (matches jose.jwtVerify on the server)
+    // 4. Sign as HS256 JWT using the project's clientSecret
     const token = await this.signHS256JWT(payload, this.clientSecret);
 
-    // 5. Append the keyring as the URL hash fragment (v2:key2,v1:key1) — browsers never send it to the server
+    // 5. Append the keyring as the URL hash fragment
     const keyringString = Object.entries(this.keyring)
       .map(([id, key]) => `${id}:${key}`)
       .join(",");
@@ -702,10 +760,6 @@ export class VolidatorClient {
     return { token, embedUrl };
   }
 
-  // ---------------------------------------------------------------------------
-  // Private: manual HS256 JWT signing (no external dependency)
-  // Produces output identical to jose.SignJWT(...).sign(key) with HS256
-  // ---------------------------------------------------------------------------
   private async signHS256JWT(payload: object, secret: string): Promise<string> {
     const header = { alg: "HS256", typ: "JWT" };
 
@@ -737,12 +791,9 @@ export class VolidatorClient {
     return `${unsigned}.${signature}`;
   }
 
-  // ---------------------------------------------------------------------------
-  // Private: parse duration strings like "30m", "2h", "7d" into seconds
-  // ---------------------------------------------------------------------------
   private parseExpiry(expiry: string): number {
     const match = expiry.match(/^(\d+)(s|m|h|d)$/);
-    if (!match) return 7200; // fallback: 2 hours
+    if (!match) return 7200;
     const [, num, unit] = match;
     const n = parseInt(num, 10);
     switch (unit) {
@@ -755,6 +806,9 @@ export class VolidatorClient {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Standard Compliance Logging Helper Class
+// ---------------------------------------------------------------------------
 export class VolidatorCompliance {
   private client: VolidatorClient;
 
@@ -798,5 +852,148 @@ export class VolidatorCompliance {
 
   async mfaEnabled(payload: Omit<LogPayload, "action">): Promise<boolean> {
     return this.logWithControl("mfa.enabled", "CC6.3", "A.9.4.2", payload);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// AI & Autonomous Agent Compliance Audit Taxonomy Class
+// ---------------------------------------------------------------------------
+export class VolidatorAgent {
+  private client: VolidatorClient;
+
+  constructor(client: VolidatorClient) {
+    this.client = client;
+  }
+
+  private async logAgent(
+    action: string,
+    euAiAct: string,
+    nistAiRmf: string,
+    soc2Control: string,
+    isoControl: string,
+    payload: Omit<LogPayload, "action"> & Record<string, any>
+  ): Promise<boolean> {
+    const {
+      actor,
+      actorId,
+      target,
+      targetId,
+      tenant,
+      tenantId,
+      metadata,
+      context,
+      telemetry,
+      req,
+      traceId,
+      spanId,
+      parentSpanId,
+      ...agentData
+    } = payload;
+
+    const enrichedMetadata = {
+      ...metadata,
+      ...agentData,
+      eu_ai_act: euAiAct,
+      nist_ai_rmf: nistAiRmf,
+      soc2_control: soc2Control,
+      iso27001: isoControl,
+    };
+
+    // Use 64KB metadata limit for AI events
+    return this.client.log(
+      {
+        actor,
+        actorId,
+        target,
+        targetId,
+        tenant,
+        tenantId,
+        action,
+        metadata: enrichedMetadata,
+        context,
+        telemetry,
+        req,
+        traceId,
+        spanId,
+        parentSpanId,
+      },
+      65536
+    );
+  }
+
+  /**
+   * Logs a tool call or external API invocation by an agent.
+   * Maps to EU AI Act Article 12, NIST AI RMF MANAGE 2.2, SOC2 CC6.6, ISO 27001 A.12.4.1.
+   */
+  async toolCall(payload: Omit<LogPayload, "action"> & {
+    toolName: string;
+    toolInput?: Record<string, any>;
+    toolOutput?: Record<string, any>;
+    latencyMs?: number;
+    success: boolean;
+  }): Promise<boolean> {
+    return this.logAgent("agent.tool_call", "Article 12", "MANAGE 2.2", "CC6.6", "A.12.4.1", payload);
+  }
+
+  /**
+   * Logs a key decision made autonomously by an AI agent model.
+   * Maps to EU AI Act Article 12 & 13, NIST AI RMF GOVERN 1.7, SOC2 CC6.2, ISO 27001 A.18.1.3.
+   */
+  async decision(payload: Omit<LogPayload, "action"> & {
+    decision: string;
+    alternatives?: string[];
+    rationale?: string;
+    confidenceScore?: number;
+    modelId?: string;
+  }): Promise<boolean> {
+    return this.logAgent("agent.decision", "Article 12 & 13", "GOVERN 1.7", "CC6.2", "A.18.1.3", payload);
+  }
+
+  /**
+   * Logs a request for human review or permission escalation.
+   * Maps to EU AI Act Article 14, NIST AI RMF GOVERN 5.1, SOC2 CC6.3, ISO 27001 A.6.1.2.
+   */
+  async escalation(payload: Omit<LogPayload, "action"> & {
+    reason: string;
+    urgency?: "low" | "medium" | "high";
+    blockedAction?: string;
+  }): Promise<boolean> {
+    return this.logAgent("agent.escalation", "Article 14", "GOVERN 5.1", "CC6.3", "A.6.1.2", payload);
+  }
+
+  /**
+   * Logs anomalous environment inputs, potential prompt injections, or policy violations.
+   * Maps to EU AI Act Article 9, NIST AI RMF MANAGE 2.4, SOC2 CC7.2, ISO 27001 A.16.1.2.
+   */
+  async anomaly(payload: Omit<LogPayload, "action"> & {
+    description: string;
+    severity?: "low" | "medium" | "high" | "critical";
+    anomalyType?: "prompt_injection" | "unexpected_input" | "policy_violation" | "other";
+  }): Promise<boolean> {
+    return this.logAgent("agent.anomaly", "Article 9", "MANAGE 2.4", "CC7.2", "A.16.1.2", payload);
+  }
+
+  /**
+   * Logs a model refusal to execute a user prompt or command due to alignment safety.
+   * Maps to EU AI Act Article 5, NIST AI RMF GOVERN 1.1, SOC2 CC6.8, ISO 27001 A.18.1.3.
+   */
+  async refusal(payload: Omit<LogPayload, "action"> & {
+    refusedInstruction: string;
+    reason: string;
+    policyViolated?: string;
+  }): Promise<boolean> {
+    return this.logAgent("agent.refusal", "Article 5", "GOVERN 1.1", "CC6.8", "A.18.1.3", payload);
+  }
+
+  /**
+   * Logs an execution context handoff from one agent to another.
+   * Maps to EU AI Act Article 12, NIST AI RMF MAP 1.6, SOC2 CC6.6, ISO 27001 A.12.4.1.
+   */
+  async handoff(payload: Omit<LogPayload, "action"> & {
+    toAgentId: string;
+    instruction: string;
+    agentContext?: Record<string, any>;
+  }): Promise<boolean> {
+    return this.logAgent("agent.handoff", "Article 12", "MAP 1.6", "CC6.6", "A.12.4.1", payload);
   }
 }

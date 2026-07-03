@@ -9,6 +9,32 @@ Volidator encrypts every log entry locally — on your server — before sending
 
 ---
 
+## What is Volidator?
+
+**Volidator** is the developer-first, zero-knowledge audit log infrastructure built for modern applications, enterprise B2B SaaS, and autonomous AI agents. By utilizing local AES-256-GCM encryption and blind indexing (HMAC-SHA-256) on your servers before ingestion, Volidator allows you to store, query, and stream audit trails without ever holding or exposing raw PII (Personally Identifiable Information) or sensitive activity data (though configurable if you want to host PII/PHI with us).
+
+---
+
+## Why Volidator? (Pain Points We Solve)
+
+Traditional logging tools force a dangerous compromise: either send raw customer data to a third-party logging vendor (creating security liabilities, compliance issues, and API keys leakage risks), or spend months building a custom, secure compliance database in-house.
+
+Volidator solves this with **Zero-Knowledge Audit Trails**:
+* **Enterprise Compliance in Minutes:** Unlocks enterprise-ready audit logging matching SOC 2 (CC6.x), ISO 27001 (A.12.4), HIPAA, and GDPR standards under 5 minutes.
+* **Zero Trust Security:** Even if Volidator's databases were compromised, hackers see only randomized ciphertext. Decryption keys live exclusively in your server environment variables and the user's browser hash fragments.
+* **AI Agent Action Auditing & Accountability:** Autonomous AI agents make decisions, run API calls, and modify databases. Volidator provides a tamper-proof ledger to trace exactly *which* agent tool was executed, *why* (LLM prompt/context), and *what* was modified, satisfying critical alignment and security monitoring requirements.
+* **Instant Customer-Facing Dashboards:** Embed fully-interactive, securely hydrated log tables inside your React frontends using our signed JIT tokens.
+
+---
+
+## Who is it for?
+
+* **B2B SaaS Engineering Teams:** Developers who need to provide enterprise tenants with search, filter, and CSV exports of system events.
+* **Security & Compliance Teams:** Organizations aiming to achieve security certifications without expanding their data privacy liability or telemetry footprint.
+* **AI & Agentic App Developers:** Builders establishing guardrails and debug logs for autonomous systems to audit agent decisions, LLM outputs, and automated tool calls.
+
+---
+
 ## Table of Contents
 
 1. [Install](#1-install)
@@ -23,8 +49,9 @@ Volidator encrypts every log entry locally — on your server — before sending
 10. [Embed Token](#10-embed-token)
 11. [Compliance Helpers](#11-compliance-helpers)
 12. [Next.js Middleware](#12-nextjs-middleware)
-13. [Auth Plugins](#13-auth-plugins)
 14. [`@volidator/react`](#14-volidatorreact)
+15. [AI Agent Auditing (VolidatorAgent)](#15-ai-agent-auditing-volidatoragent)
+16. [Batch Ingestion (logBatch)](#16-batch-ingestion-logbatch)
 
 ---
 
@@ -382,6 +409,107 @@ The hook:
 5. Cleans up the event listener on component unmount.
 
 → [Full JIT Hydration guide](https://docs.volidator.com/guides/jit-hydration/)
+
+---
+
+## 15. AI Agent Auditing (`VolidatorAgent`)
+
+Volidator provides a specialized compliance logging namespace tailored for autonomous AI systems, LLMs, and multi-agent chains. Access these methods via `volidator.agent.*`.
+
+Every call automatically appends the correct mapping metadata for **EU AI Act compliance**, **NIST AI RMF guidelines**, **SOC 2**, and **ISO 27001**.
+
+```typescript
+// 1. Log an agent tool call or external API request
+await volidator.agent.toolCall({
+  actor: "writer-agent-v1",
+  traceId: runId,
+  spanId: spanId,
+  toolName: "fetch_news",
+  toolInput: { topic: "AI Act updates" },
+  toolOutput: { results: ["..." ] },
+  success: true,
+  latencyMs: 140,
+});
+
+// 2. Log an autonomous decision made by the model
+await volidator.agent.decision({
+  actor: "writer-agent-v1",
+  traceId: runId,
+  decision: "publish_article",
+  rationale: "article scoring passed verification checks",
+  confidenceScore: 0.96,
+  modelId: "claude-3-5-sonnet",
+});
+
+// 3. Request human oversight/escalation (EU AI Act Article 14)
+await volidator.agent.escalation({
+  actor: "writer-agent-v1",
+  traceId: runId,
+  reason: "article output score fell below threshold",
+  urgency: "medium",
+  blockedAction: "auto_publish",
+});
+
+// 4. Log suspected anomalies, injections, or system security events
+await volidator.agent.anomaly({
+  actor: "guardrail-shield",
+  traceId: runId,
+  description: "jailbreak prompt pattern detected in input stream",
+  severity: "critical",
+  anomalyType: "prompt_injection",
+});
+
+// 5. Log a model refusal based on safety alignment rules
+await volidator.agent.refusal({
+  actor: "writer-agent-v1",
+  traceId: runId,
+  refusedInstruction: "write code to extract system logs",
+  reason: "corporate security policy alignment violation",
+});
+
+// 6. Log execution context handoffs in multi-agent workflows
+await volidator.agent.handoff({
+  actor: "orchestrator",
+  toAgentId: "designer-agent-v1",
+  instruction: "generate banner image matching text outline",
+  agentContext: { prompt: "neon style workspace banner" },
+});
+```
+
+### Trace Correlation (OpenTelemetry Compatibility)
+
+Pass standard trace metadata (`traceId`, `spanId`, `parentSpanId`) to map out parent-child relationships and causality graphs between agent steps.
+
+Volidator parses W3C `traceparent` headers automatically when you pass a request object. Telemetry contexts emitted by LangChain, LlamaIndex, or standard instrumentations are inherited without manual piping:
+
+```typescript
+await volidator.agent.toolCall({
+  req: request, // Automatically extracts traceId/spanId from incoming headers
+  toolName: "database_write",
+  success: true,
+});
+```
+
+---
+
+## 16. Batch Ingestion (`logBatch`)
+
+For high-throughput runtimes (like agents executing iterative reasoning loops or massive data imports), use `logBatch` to prepare and send multiple logs in a single HTTP request.
+
+All cryptographic preparation (AES-256-GCM encryption, blind indexing) runs in parallel on the client before a single POST request is made.
+
+```typescript
+const logs = [
+  { actor: "agent-1", action: "thought", metadata: { step: 1 } },
+  { actor: "agent-1", action: "tool_call", metadata: { toolName: "search" } },
+  { actor: "agent-1", action: "thought", metadata: { step: 2 } },
+];
+
+const { accepted, rejected } = await volidator.logBatch(logs);
+console.log(`Successfully ingested ${accepted} logs, failed to prepare ${rejected}`);
+```
+
+*Maximum batch size is 100 entries per request.*
 
 ---
 
