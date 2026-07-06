@@ -1,6 +1,6 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and edge runtimes",
   "license": "MIT",
   "publishConfig": {
@@ -33,6 +33,16 @@
       "types": "./dist/plugins/universal.d.ts",
       "import": "./dist/plugins/universal.js",
       "require": "./dist/plugins/universal.cjs"
+    },
+    "./agent-langchain": {
+      "types": "./dist/plugins/agent-langchain.d.ts",
+      "import": "./dist/plugins/agent-langchain.js",
+      "require": "./dist/plugins/agent-langchain.cjs"
+    },
+    "./agent-vercel": {
+      "types": "./dist/plugins/agent-vercel.d.ts",
+      "import": "./dist/plugins/agent-vercel.js",
+      "require": "./dist/plugins/agent-vercel.cjs"
     }
   },
   "scripts": {

@@ -1,10 +1,12 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "exports": {
     ".": "./src/index.ts",
     "./next": "./src/middleware/next.ts",
     "./clerk": "./src/plugins/clerk.ts",
-    "./universal": "./src/plugins/universal.ts"
+    "./universal": "./src/plugins/universal.ts",
+    "./agent-langchain": "./src/plugins/agent-langchain.ts",
+    "./agent-vercel": "./src/plugins/agent-vercel.ts"
   }
 }

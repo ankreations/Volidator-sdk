@@ -6,6 +6,8 @@ export default defineConfig({
     "middleware/next": "src/middleware/next.ts",
     "plugins/clerk": "src/plugins/clerk.ts",
     "plugins/universal": "src/plugins/universal.ts",
+    "plugins/agent-langchain": "src/plugins/agent-langchain.ts",
+    "plugins/agent-vercel": "src/plugins/agent-vercel.ts",
   },
   format: ["cjs", "esm"],
   dts: true,
