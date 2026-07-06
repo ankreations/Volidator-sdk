@@ -19,8 +19,17 @@ export interface UniversalAuditConfig {
  * Creates a universal Next.js IAM middleware wrapper.
  * Compatible with any authentication provider (Auth0, BetterAuth, Kinde, Supabase, etc).
  */
-export function createUniversalAudit({ client, getUserId, getSession, getMetadata }: UniversalAuditConfig) {
-  return function withAuthAudit<T extends (req: Request, ctx: any) => any>(handler: T) {
+export function createUniversalAudit({
+  client,
+  getUserId,
+  getSession,
+  getMetadata,
+}: UniversalAuditConfig): <T extends (req: Request, ctx: any) => any>(
+  handler: T
+) => (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
+  return function withAuthAudit<T extends (req: Request, ctx: any) => any>(
+    handler: T
+  ): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
     // Wrap with the base Next.js middleware first (extracts IP & User Agent)
     const baseHandler = withVolidator(client, async (req: Request, ctx: any) => {
       let session: any = null;
@@ -32,7 +41,7 @@ export function createUniversalAudit({ client, getUserId, getSession, getMetadat
         if (getSession) {
           session = await getSession(req, ctx);
         }
-        
+
         // Ensure getUserId and getMetadata are called with the resolved session
         userId = await getUserId(req, session ?? ctx);
 
@@ -44,11 +53,11 @@ export function createUniversalAudit({ client, getUserId, getSession, getMetadat
       }
 
       const originalLog = ctx.volidator.log;
-      
+
       // Override the scoped logger to automatically attach the universal actor ID
       ctx.volidator.log = async (payload: LogPayload) => {
         const enrichedPayload = { ...payload };
-        
+
         if (!enrichedPayload.actor && userId) {
           enrichedPayload.actor = userId;
         }

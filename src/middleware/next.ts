@@ -7,7 +7,10 @@ import { VolidatorClient, LogPayload } from "../index";
  * `volidator.log()` and `volidator.compliance.*()` call made inside
  * the wrapped handler.
  */
-export function withVolidator<T extends Function>(client: VolidatorClient, handler: T) {
+export function withVolidator<T extends Function>(
+  client: VolidatorClient,
+  handler: T
+): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
   return async (req: Request, ctx: any = {}, ...args: any[]) => {
     const extractedContext = VolidatorClient.extractContext(req);
 

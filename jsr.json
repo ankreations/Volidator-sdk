@@ -1,0 +1,10 @@
+{
+  "name": "@volidator/node",
+  "version": "1.0.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./next": "./src/middleware/next.ts",
+    "./clerk": "./src/plugins/clerk.ts",
+    "./universal": "./src/plugins/universal.ts"
+  }
+}

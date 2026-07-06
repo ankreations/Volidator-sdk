@@ -12,8 +12,15 @@ export interface ClerkAuditConfig {
  * Creates a Clerk-specific Next.js middleware wrapper.
  * Automatically injects the Clerk userId as the actor, and extracts IP/User-Agent.
  */
-export function createClerkAudit({ client, getAuth }: ClerkAuditConfig) {
-  return function withClerkAudit<T extends (req: Request, ctx: any) => any>(handler: T) {
+export function createClerkAudit({
+  client,
+  getAuth,
+}: ClerkAuditConfig): <T extends (req: Request, ctx: any) => any>(
+  handler: T
+) => (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
+  return function withClerkAudit<T extends (req: Request, ctx: any) => any>(
+    handler: T
+  ): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
     // Wrap with the base Next.js middleware first
     const baseHandler = withVolidator(client, async (req: Request, ctx: any) => {
       let session: any = null;
