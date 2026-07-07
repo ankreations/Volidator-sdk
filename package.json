@@ -1,6 +1,6 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and edge runtimes",
   "license": "MIT",
   "publishConfig": {
@@ -63,11 +63,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ankreations/volidator"
+    "url": "https://github.com/ankreations/Volidator-sdk.git"
   },
   "homepage": "https://volidator.com",
   "bugs": {
-    "url": "https://github.com/ankreations/volidator/issues"
+    "url": "https://github.com/ankreations/Volidator-sdk/issues"
   },
   "keywords": [
     "audit-log",

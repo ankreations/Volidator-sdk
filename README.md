@@ -7,6 +7,8 @@ Volidator encrypts every log entry locally — on your server — before sending
 [![npm](https://img.shields.io/npm/v/@volidator/node)](https://www.npmjs.com/package/@volidator/node)
 [![license](https://img.shields.io/npm/l/@volidator/node)](LICENSE)
 
+**[Website & Sign Up](https://volidator.com) | [Developer Documentation](https://volidator.com/docs)**
+
 ---
 
 ## What is Volidator?
