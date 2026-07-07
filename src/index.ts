@@ -194,7 +194,7 @@ export class VolidatorClient {
    * and increment Lamport logical clock sequences across execution boundaries
    * (e.g. within API requests or serverless handler contexts).
    */
-  public static readonly logicalClockStore = new AsyncLocalStorage<{ clock: number }>();
+  public static readonly logicalClockStore: AsyncLocalStorage<{ clock: number }> = new AsyncLocalStorage<{ clock: number }>();
   private fallbackLogicalClock = 0;
 
   /**
