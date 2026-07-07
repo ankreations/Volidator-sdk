@@ -53,9 +53,9 @@ describe("Trace Ordering (Lamport Logical Timestamps)", () => {
       expect(entry2.logicalClock).toBe(52);
     });
 
-    // Outside store, fallback clock is still isolated (only incremented by our first test to 2)
+    // Outside store, fallback clock is still isolated (starts at 0 on this new client instance, so first call is 1)
     const entryOutside = await (client as any).prepareLogEntry({ action: "test.action" });
-    expect(entryOutside.logicalClock).toBe(3);
+    expect(entryOutside.logicalClock).toBe(1);
   });
 });
 
@@ -84,24 +84,66 @@ describe("Envelope Size Limits (Claim Check Pattern)", () => {
   it("should upload encrypted payload to storage and return isClaimCheck true for large payloads (>30KB)", async () => {
     const client = makeClient();
     
-    // Generate large metadata string (~35KB)
-    const largeValue = "x".repeat(35000);
+    // Generate large metadata object by creating 40 keys of 1000 characters each
+    // (bypassing the 1000-char string truncation limit in limitDepth)
+    const largeMetadata: Record<string, string> = {};
+    for (let i = 0; i < 40; i++) {
+      largeMetadata[`key${i}`] = "x".repeat(1000);
+    }
+
     const mockFetch = vi.fn().mockImplementation(() => Promise.resolve({ ok: true, status: 200 }));
     globalThis.fetch = mockFetch;
 
     const entry = await (client as any).prepareLogEntry({
       action: "large.payload",
-      metadata: { key: largeValue },
+      metadata: largeMetadata,
     }, 100000); // Override metadata limit check to let us build a >30KB payload
 
     expect(entry.isClaimCheck).toBe(true);
     // encryptedPayload should be a 64-character content hash
     expect(entry.encryptedPayload).toMatch(/^[a-f0-9]{64}$/);
-    
     // Verify R2 PUT upload was called
     expect(mockFetch).toHaveBeenCalled();
     const [url, options] = mockFetch.mock.calls[0];
     expect(url).toContain("/v1/log/upload/");
     expect(options.method).toBe("PUT");
+  });
+
+  it("should throw an error and reject the log if raw metadata exceeds 5MB", async () => {
+    const client = makeClient();
+
+    // Generate extremely large metadata object (~5.5MB)
+    const giantMetadata: Record<string, string> = {};
+    for (let i = 0; i < 5500; i++) {
+      giantMetadata[`key${i}`] = "x".repeat(1000);
+    }
+
+    await expect(
+      (client as any).prepareLogEntry({
+        action: "giant.payload",
+        metadata: giantMetadata,
+      }, 10000000) // Override standard metadata limit check
+    ).rejects.toThrow("Volidator SDK Error: Audit log payload exceeds the 5MB hard limit");
+  });
+
+  it("should handle 429 quota limit responses from the ingestion endpoint", async () => {
+    const client = makeClient();
+
+    const mockFetch = vi.fn().mockImplementation(() => Promise.resolve({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      json: () => Promise.resolve({ error: "Monthly Ingestion Quota Exceeded for this Project Tier." })
+    }));
+    globalThis.fetch = mockFetch;
+
+    const logged = await client.log({
+      action: "quota.test",
+      metadata: { foo: "bar" }
+    });
+
+    // log() swallows endpoint failures and returns false
+    expect(logged).toBe(false);
+    expect(mockFetch).toHaveBeenCalled();
   });
 });

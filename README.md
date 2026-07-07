@@ -52,6 +52,7 @@ Volidator solves this with **Zero-Knowledge Audit Trails**:
 14. [`@volidator/react`](#14-volidatorreact)
 15. [AI Agent Auditing (VolidatorAgent)](#15-ai-agent-auditing-volidatoragent)
 16. [Batch Ingestion (logBatch)](#16-batch-ingestion-logbatch)
+17. [Large Payloads (Claim Check Pattern)](#17-large-payloads-claim-check-pattern)
 
 ---
 
@@ -476,7 +477,7 @@ await volidator.agent.handoff({
 });
 ```
 
-### Trace Correlation (OpenTelemetry Compatibility)
+### Trace Correlation & Logical Clocks (Lamport Timestamps)
 
 Pass standard trace metadata (`traceId`, `spanId`, `parentSpanId`) to map out parent-child relationships and causality graphs between agent steps.
 
@@ -489,6 +490,11 @@ await volidator.agent.toolCall({
   success: true,
 });
 ```
+
+#### Deterministic Edge Trace Ordering
+To resolve NTP (Network Time Protocol) clock drift anomalies between distributed edge servers or serverless invocations, the SDK automatically maintains and propagates a **Lamport Logical Clock** value inside request headers (`x-volidator-clock`). Clocks are synchronized across boundary calls using:
+$$\text{localClock} = \max(\text{localClock}, \text{incomingClock}) + 1$$
+This guarantees that visualizer graphs and dashboard causality lines render completely deterministically in chronological order.
 
 ---
 
@@ -510,6 +516,17 @@ console.log(`Successfully ingested ${accepted} logs, failed to prepare ${rejecte
 ```
 
 *Maximum batch size is 100 entries per request.*
+
+---
+
+## 17. Large Payloads (Claim Check Pattern)
+
+When logging autonomous agent thinking processes, prompt contexts, or tool data, payloads can easily grow quite large. If your encrypted log payload exceeds **30KB**, the SDK automatically and transparently switches to the **Claim Check Pattern**:
+* The SDK uploads the encrypted ciphertext chunk to Cloudflare R2 object storage securely before database ingestion.
+* It writes a content-addressed SHA-256 hash pointer to the database log record instead of the full payload, setting `isClaimCheck` to true.
+* The Volidator dashboard and embed widgets detect this flag and automatically retrieve the encrypted chunk from the storage proxy to decrypt it locally in the browser.
+
+This maintains absolute Zero-Knowledge privacy guarantees for large payloads without bloat.
 
 ---
 

@@ -155,9 +155,21 @@ export class VolidatorClient {
   // Custom limit for metadata object serialization size
   private maxMetadataSize: number;
 
+  /**
+   * Thread-local asynchronous context storage used to maintain
+   * and increment Lamport logical clock sequences across execution boundaries
+   * (e.g. within API requests or serverless handler contexts).
+   */
   public static readonly logicalClockStore = new AsyncLocalStorage<{ clock: number }>();
   private fallbackLogicalClock = 0;
 
+  /**
+   * Increments and returns the current Lamport Logical Clock counter.
+   * If a logicalClockStore context is active, it reads, syncs, and updates
+   * the thread-scoped clock; otherwise, it falls back to a global instance-scoped counter.
+   *
+   * @param incomingClock Optional logical clock sequence from incoming trace parent header
+   */
   public getAndIncrementClock(incomingClock?: number): number {
     const store = VolidatorClient.logicalClockStore.getStore();
     if (store) {
@@ -435,6 +447,15 @@ export class VolidatorClient {
   // prepareLogEntry() — Prepares, redacts, and encrypts a single log entry payload
   // ---------------------------------------------------------------------------
   private async prepareLogEntry(payload: LogPayload, maxMetaOverride?: number) {
+    // Hard ceiling guardrail: reject immediately if raw metadata exceeds 5MB limit
+    const PAYLOAD_5MB_LIMIT = 5 * 1024 * 1024;
+    const metadata = payload.metadata || {};
+    const payloadSize = new TextEncoder().encode(JSON.stringify(metadata)).length;
+
+    if (payloadSize > PAYLOAD_5MB_LIMIT) {
+      throw new Error(`Volidator SDK Error: Audit log payload exceeds the 5MB hard limit (${payloadSize} bytes).`);
+    }
+
     const actorRaw = payload.actor || payload.actorId || "unknown";
     const targetRaw = payload.target || payload.targetId || "unknown";
     const tenantRaw = payload.tenant || payload.tenantId || "";
