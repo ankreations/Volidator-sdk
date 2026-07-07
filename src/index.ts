@@ -32,6 +32,37 @@ export interface TelemetryConfig {
   location?: boolean;
 }
 
+export interface BatcherOptions {
+  /**
+   * Automatically flush and send logs when the buffer reaches this count.
+   * Maximum count is capped at 100.
+   */
+  autoFlushCount?: number;
+  /**
+   * Automatically flush and send logs every N milliseconds.
+   * 
+   * ⚠️ SERVERLESS/EDGE CAVEAT:
+   * Do not use in serverless/edge environments (e.g. Cloudflare Workers, Vercel Edge)
+   * as background timers are not guaranteed to execute after response completion.
+   */
+  autoFlushInterval?: number;
+}
+
+export interface VolidatorBatcher {
+  /**
+   * Push a log payload to the buffer. Auto-flushes if autoFlushCount limit is reached.
+   */
+  push(payload: LogPayload): void;
+  /**
+   * Manually flush the buffer and send all logs.
+   */
+  flush(): Promise<{ accepted: number; rejected: number }>;
+  /**
+   * Returns the current size of the buffer.
+   */
+  size(): number;
+}
+
 export interface TelemetryContext {
   ip?: string;
   userAgent?: string;
@@ -90,7 +121,7 @@ export interface LogPayload {
   metadata?: Record<string, any>;
   context?: TelemetryContext;
   telemetry?: TelemetryConfig;
-  req?: any; // support passing the HTTP request object directly
+  req?: Request | import("node:http").IncomingMessage; // support passing the HTTP request object directly
   /**
    * Sequence number/counter to mathematically trace causal event chains
    */
@@ -155,6 +186,9 @@ export class VolidatorClient {
   // Custom limit for metadata object serialization size
   private maxMetadataSize: number;
 
+  private maxRetries: number;
+  private onDeliveryFailure?: (payload: LogPayload, error: Error) => void;
+
   /**
    * Thread-local asynchronous context storage used to maintain
    * and increment Lamport logical clock sequences across execution boundaries
@@ -203,8 +237,18 @@ export class VolidatorClient {
     referenceKeys?: string[];
     /**
      * Custom maximum size for serialized metadata in bytes. Defaults to 10240 (10KB).
+     * Serialized metadata is subject to a depth limit of 5 levels and values are
+     * truncated to 1000 characters.
      */
     maxMetadataSize?: number;
+    /**
+     * Maximum number of delivery retry attempts for transient errors. Defaults to 3.
+     */
+    maxRetries?: number;
+    /**
+     * Callback fired when an event terminals fails to deliver after all retries.
+     */
+    onDeliveryFailure?: (payload: LogPayload, error: Error) => void;
   }) {
     this.apiKey = config.apiKey;
     this.endpoint = config.endpoint || "https://ingestion.volidator.com";
@@ -213,6 +257,8 @@ export class VolidatorClient {
     this.redactKeys = config.redactKeys || [];
     this.referenceKeys = config.referenceKeys || [];
     this.maxMetadataSize = config.maxMetadataSize || 10240;
+    this.maxRetries = config.maxRetries !== undefined ? config.maxRetries : 3;
+    this.onDeliveryFailure = config.onDeliveryFailure;
 
     // Parse encryption keys & keyring
     if (config.keyring && config.activeEncryptionKeyId) {
@@ -555,13 +601,21 @@ export class VolidatorClient {
       }
     }
 
+    let didTruncateDepth = false;
+    let didTruncateString = false;
+
     const limitDepth = (obj: any, currentDepth = 1): any => {
       if (currentDepth > 5) {
+        didTruncateDepth = true;
         return "[Truncated - Depth Exceeded]";
       }
       if (typeof obj !== "object" || obj === null) {
         if (typeof obj === "string") {
-          return truncate(obj, 1000);
+          const truncatedVal = truncate(obj, 1000);
+          if (truncatedVal.length !== obj.length) {
+            didTruncateString = true;
+          }
+          return truncatedVal;
         }
         return obj;
       }
@@ -576,6 +630,16 @@ export class VolidatorClient {
     };
 
     const processedMetadata = limitDepth(safeMetadata);
+
+    if (typeof process !== "undefined" && process.env?.NODE_ENV !== "production") {
+      if (didTruncateDepth) {
+        console.warn("[Volidator] Warning: Log metadata exceeded maximum depth limit (5) and was truncated.");
+      }
+      if (didTruncateString) {
+        console.warn("[Volidator] Warning: One or more log metadata string values exceeded the 1000-character limit and were truncated.");
+      }
+    }
+
     const serializedMeta = JSON.stringify(processedMetadata);
     const maxMetaLimit = maxMetaOverride || this.maxMetadataSize;
     if (serializedMeta.length > maxMetaLimit) {
@@ -686,21 +750,51 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   async log(payload: LogPayload, maxMetaOverride?: number): Promise<boolean> {
     const entry = await this.prepareLogEntry(payload, maxMetaOverride);
-    try {
-      const res = await fetch(`${this.endpoint}/v1/log`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(entry),
-      });
+    let attempt = 0;
+    let delay = 500;
+    let lastError: Error = new Error("Unknown error");
 
-      return res.ok;
-    } catch (err: any) {
-      console.error(`[Volidator] Failed to send log: ${err.message}`);
-      return false;
+    while (attempt <= this.maxRetries) {
+      try {
+        const res = await fetch(`${this.endpoint}/v1/log`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(entry),
+        });
+
+        if (res.ok) {
+          return true;
+        }
+
+        lastError = new Error(`Server returned status ${res.status}`);
+
+        // Do not retry 4xx client errors
+        if (res.status >= 400 && res.status < 500) {
+          break;
+        }
+      } catch (err: any) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+
+      attempt++;
+      if (attempt <= this.maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay *= 3;
+      }
     }
+
+    console.error(`[Volidator] Failed to send log after ${attempt} attempts: ${lastError.message}`);
+    if (this.onDeliveryFailure) {
+      try {
+        this.onDeliveryFailure(payload, lastError);
+      } catch (cbErr: any) {
+        console.error(`[Volidator] Error in onDeliveryFailure callback: ${cbErr.message}`);
+      }
+    }
+    return false;
   }
 
   // ---------------------------------------------------------------------------
@@ -756,12 +850,93 @@ export class VolidatorClient {
   }
 
   // ---------------------------------------------------------------------------
+  // batcher() — Convenience batcher for buffered log ingestion
+  // ---------------------------------------------------------------------------
+  /**
+   * Creates a convenience batcher instance for buffering and ingestion.
+   * 
+   * ⚠️ SERVERLESS/EDGE CAVEAT:
+   * autoFlushInterval uses setInterval internally. In serverless/edge environments
+   * (e.g. Cloudflare Workers, Vercel Edge), the V8 isolate is frozen or destroyed
+   * once the response is sent. Background timers will silently fail to fire, leading
+   * to dropped logs. Only use autoFlushInterval in long-lived Node.js processes.
+   * In serverless/edge environments, always call await batcher.flush() explicitly
+   * before returning the response, or wrap it in ctx.waitUntil().
+   */
+  public batcher(options?: BatcherOptions): VolidatorBatcher {
+    const client = this;
+    let buffer: LogPayload[] = [];
+    let intervalId: any = null;
+
+    const flush = async (): Promise<{ accepted: number; rejected: number }> => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      if (buffer.length === 0) {
+        if (options?.autoFlushInterval) {
+          startTimer();
+        }
+        return { accepted: 0, rejected: 0 };
+      }
+
+      const payloadsToFlush = [...buffer];
+      buffer = [];
+
+      if (options?.autoFlushInterval) {
+        startTimer();
+      }
+
+      return client.logBatch(payloadsToFlush);
+    };
+
+    const startTimer = () => {
+      if (options?.autoFlushInterval && !intervalId) {
+        intervalId = setInterval(() => {
+          flush().catch((err) => {
+            console.error(`[Volidator] Batcher auto-flush failed: ${err.message}`);
+          });
+        }, options.autoFlushInterval);
+        if (intervalId && typeof intervalId.unref === "function") {
+          intervalId.unref();
+        }
+      }
+    };
+
+    const push = (payload: LogPayload): void => {
+      buffer.push(payload);
+      const maxCount = options?.autoFlushCount || 100;
+      if (buffer.length >= Math.min(maxCount, 100)) {
+        flush().catch((err) => {
+          console.error(`[Volidator] Batcher auto-flush on count failed: ${err.message}`);
+        });
+      }
+    };
+
+    const size = (): number => buffer.length;
+
+    startTimer();
+
+    return {
+      push,
+      flush,
+      size,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // generateEmbedToken() — Sign a HS256 JWT for the embeddable dashboard widget
   // ---------------------------------------------------------------------------
-  async generateEmbedToken(config: EmbedTokenConfig): Promise<EmbedTokenResult> {
-    if (!this.projectId || !this.clientSecret) {
+  async generateEmbedToken(config: EmbedTokenConfig & {
+    projectId?: string;
+    clientSecret?: string;
+  }): Promise<EmbedTokenResult> {
+    const projectId = config.projectId || this.projectId;
+    const clientSecret = config.clientSecret || this.clientSecret;
+
+    if (!projectId || !clientSecret) {
       throw new Error(
-        "generateEmbedToken() requires projectId and clientSecret in the VolidatorClient constructor."
+        "generateEmbedToken() requires projectId and clientSecret to be provided in either the configuration or the VolidatorClient constructor."
       );
     }
 
@@ -805,7 +980,7 @@ export class VolidatorClient {
 
     // 3. Build the JWT payload
     const payload: Record<string, any> = {
-      pid: this.projectId,
+      pid: projectId,
       scope: defaultScope,
       iat: now,
       exp: now + expiresInSeconds,
@@ -843,7 +1018,7 @@ export class VolidatorClient {
     }
 
     // 4. Sign as HS256 JWT using the project's clientSecret
-    const token = await this.signHS256JWT(payload, this.clientSecret);
+    const token = await this.signHS256JWT(payload, clientSecret);
 
     // 5. Append the keyring as the URL hash fragment
     const keyringString = Object.entries(this.keyring)

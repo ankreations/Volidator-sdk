@@ -68,8 +68,12 @@ npm install @volidator/node
 
 ## 2. Environment Setup
 
-Store secrets as environment variables. Never hardcode them.
+Generate a secure 32-byte encryption key (64 hex characters) with the `vol-dek-` prefix:
+```bash
+node -e "const b=require('crypto').randomBytes(32);console.log('vol-dek-'+b.toString('hex'))"
+```
 
+Then add it as an environment secret:
 ```bash
 # Authenticates your server with the Volidator ingestion endpoint
 VOLIDATOR_API_KEY="val_live_xxxxxxxx..."
@@ -90,8 +94,28 @@ import { VolidatorClient } from "@volidator/node";
 export const volidator = new VolidatorClient({
   apiKey: process.env.VOLIDATOR_API_KEY!,
   encryptionKey: process.env.VOLIDATOR_ENCRYPTION_KEY!,
+  
+  // Optional configuration for delivery retries and sizes:
+  maxRetries: 3,         // Retry up to 3 times on transient errors (default: 3)
+  maxMetadataSize: 10240, // Cap serialized metadata size at 10KB (default: 10KB)
+  
+  onDeliveryFailure: (payload, error) => {
+    // Callback invoked when a log permanently fails to deliver after all retries
+    console.error(`Log delivery failed permanently for action "${payload.action}": ${error.message}`);
+  }
 });
 ```
+
+### Transient Errors & Retry Strategy
+By default, the SDK automatically retries log delivery on network errors or 5xx server responses using an exponential backoff strategy (delays: ~500ms → ~1500ms → ~4500ms). Client errors (4xx) are never retried.
+
+> **⚠️ Serverless / Edge Function execution time caveat:**
+> Worst-case retry attempts take up to ~6.5 seconds. If you are running inside a serverless or Edge environment (e.g. Vercel, Next.js Edge, Cloudflare Workers) with strict duration limits:
+> - Wrap log calls in `ctx.waitUntil(volidator.log(...))` so the worker doesn't block response delivery.
+> - Or reduce `maxRetries` to `1` (or `0` to disable retries) to avoid hitting runtime execution limits.
+
+### Metadata Limits & Truncation
+Log metadata is subject to a hard depth limit of **5 levels** and string value length limit of **1000 characters**. In non-production environments (`NODE_ENV !== 'production'`), the SDK will emit warnings in the console if any metadata is truncated.
 
 ---
 
@@ -529,6 +553,33 @@ When logging autonomous agent thinking processes, prompt contexts, or tool data,
 * The Volidator dashboard and embed widgets detect this flag and automatically retrieve the encrypted chunk from the storage proxy to decrypt it locally in the browser.
 
 This maintains absolute Zero-Knowledge privacy guarantees for large payloads without bloat.
+
+---
+
+## 18. Fluent Batcher (`batcher`)
+
+Instead of managing arrays and calling `logBatch` manually, you can use the fluent `batcher()` client helper. This is highly recommended for loop-heavy agent runs or script execution paths.
+
+```typescript
+const batcher = volidator.batcher({
+  autoFlushCount: 50,      // Automatically flush and send when buffer hits 50 logs
+  autoFlushInterval: 5000, // Or automatically flush every 5 seconds (Node-only, see warning)
+});
+
+// Inside your loop or agent reasoning cycle:
+batcher.push({
+  actor: "agent-1",
+  action: "thought",
+  metadata: { step: 1, text: "Thinking..." }
+});
+
+// Always call flush manually at the end of the script or request path to send any leftovers:
+await batcher.flush();
+```
+
+> **⚠️ Serverless / Edge Warning:**
+> `autoFlushInterval` uses `setInterval` internally. In serverless and Edge environments (like Cloudflare Workers, Vercel Edge, Next.js Edge), the V8 isolate is **frozen or destroyed** as soon as the response is returned to the user. Background timers will silently fail to execute, resulting in dropped logs.
+> **Only use `autoFlushInterval` in long-lived Node.js applications** (Express, Fastify, CLI tools). For serverless/edge functions, **always manually call `await batcher.flush()`** or pass the promise to `ctx.waitUntil()`.
 
 ---
 
