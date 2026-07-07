@@ -13,6 +13,8 @@ export function withVolidator<T extends Function>(
 ): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
   return async (req: Request, ctx: any = {}, ...args: any[]) => {
     const extractedContext = VolidatorClient.extractContext(req);
+    const extractedTrace = VolidatorClient.extractTraceContext(req);
+    const incomingClock = extractedTrace.logicalClock || 0;
 
     // ---------------------------------------------------------------------------
     // Scoped log — merges request-level IP/UA context into every log call.
@@ -38,10 +40,6 @@ export function withVolidator<T extends Function>(
     // ---------------------------------------------------------------------------
     // Scoped compliance — mirrors VolidatorCompliance but routes through
     // scopedLog so that IP/UA telemetry is preserved in compliance events.
-    //
-    // Previously this passed client.compliance directly, which called
-    // client.log() without the request context — silently dropping telemetry
-    // from every compliance audit event.
     // ---------------------------------------------------------------------------
     const withControl = (
       action: string,
@@ -80,6 +78,8 @@ export function withVolidator<T extends Function>(
       },
     };
 
-    return handler(req, newCtx, ...args);
+    return VolidatorClient.logicalClockStore.run({ clock: incomingClock }, () => {
+      return handler(req, newCtx, ...args);
+    });
   };
 }

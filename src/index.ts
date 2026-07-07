@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 // ---------------------------------------------------------------------------
 // Reference-Based Redaction Types
 // ---------------------------------------------------------------------------
@@ -89,6 +91,14 @@ export interface LogPayload {
   context?: TelemetryContext;
   telemetry?: TelemetryConfig;
   req?: any; // support passing the HTTP request object directly
+  /**
+   * Sequence number/counter to mathematically trace causal event chains
+   */
+  logicalClock?: number;
+  /**
+   * If true, indicates the log payload is stored externally in R2
+   */
+  isClaimCheck?: boolean;
 }
 
 interface EmbedTokenViewConfig {
@@ -144,6 +154,19 @@ export class VolidatorClient {
   
   // Custom limit for metadata object serialization size
   private maxMetadataSize: number;
+
+  public static readonly logicalClockStore = new AsyncLocalStorage<{ clock: number }>();
+  private fallbackLogicalClock = 0;
+
+  public getAndIncrementClock(incomingClock?: number): number {
+    const store = VolidatorClient.logicalClockStore.getStore();
+    if (store) {
+      store.clock = Math.max(store.clock, incomingClock || 0) + 1;
+      return store.clock;
+    }
+    this.fallbackLogicalClock = Math.max(this.fallbackLogicalClock, incomingClock || 0) + 1;
+    return this.fallbackLogicalClock;
+  }
 
   public compliance: VolidatorCompliance;
   public agent: VolidatorAgent;
@@ -246,7 +269,7 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   // OpenTelemetry W3C traceparent context parser
   // ---------------------------------------------------------------------------
-  static extractTraceContext(req: any): { traceId?: string; spanId?: string } {
+  static extractTraceContext(req: any): { traceId?: string; spanId?: string; logicalClock?: number } {
     if (!req) return {};
     const getHeader = (name: string): string => {
       if (typeof req.headers?.get === "function") {
@@ -258,11 +281,25 @@ export class VolidatorClient {
       return "";
     };
 
+    const result: { traceId?: string; spanId?: string; logicalClock?: number } = {};
+
+    const clockVal = getHeader("x-volidator-clock");
+    if (clockVal) {
+      const parsed = parseInt(clockVal, 10);
+      if (!isNaN(parsed)) {
+        result.logicalClock = parsed;
+      }
+    }
+
     const traceparent = getHeader("traceparent");
-    if (!traceparent) return {};
-    const parts = traceparent.split("-");
-    if (parts.length !== 4) return {};
-    return { traceId: parts[1], spanId: parts[2] };
+    if (traceparent) {
+      const parts = traceparent.split("-");
+      if (parts.length === 4) {
+        result.traceId = parts[1];
+        result.spanId = parts[2];
+      }
+    }
+    return result;
   }
 
   private static resolveTelemetryConfig(config: TelemetryConfig): Required<Omit<TelemetryConfig, "preset">> {
@@ -543,10 +580,11 @@ export class VolidatorClient {
       enrichedPayload.context = context;
     }
 
-    // Auto-extract trace contexts
+    // Auto-extract trace contexts and logical clock from incoming request if present
     let traceId = payload.traceId;
     let spanId = payload.spanId;
     let parentSpanId = payload.parentSpanId;
+    let logicalClock = payload.logicalClock;
 
     if (payload.req) {
       const extractedTrace = VolidatorClient.extractTraceContext(payload.req);
@@ -556,7 +594,12 @@ export class VolidatorClient {
       if (!spanId && extractedTrace.spanId) {
         spanId = extractedTrace.spanId;
       }
+      if (logicalClock === undefined && extractedTrace.logicalClock !== undefined) {
+        logicalClock = extractedTrace.logicalClock;
+      }
     }
+
+    const resolvedClock = this.getAndIncrementClock(logicalClock);
 
     if (spanId) {
       enrichedPayload.spanId = spanId;
@@ -572,7 +615,38 @@ export class VolidatorClient {
     const tenantBlindIndex = tenant ? await this.generateBlindIndex(tenant, activeKeyBuffer) : undefined;
     const traceBlindIndex = traceId ? await this.generateBlindIndex(traceId, activeKeyBuffer) : undefined;
 
-    const encryptedPayload = await this.encryptPayload(enrichedPayload);
+    let encryptedPayload = await this.encryptPayload(enrichedPayload);
+    let isClaimCheck = false;
+
+    if (encryptedPayload.length > 30720) {
+      // Calculate content hash of the encrypted payload
+      const binaryBuffer = new TextEncoder().encode(encryptedPayload);
+      const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", binaryBuffer);
+      const hashHex = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      // Upload encrypted payload to edge worker storage endpoint
+      try {
+        const uploadRes = await fetch(`${this.endpoint}/v1/log/upload/${hashHex}`, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/octet-stream",
+          },
+          body: encryptedPayload,
+        });
+        if (!uploadRes.ok) {
+          throw new Error(`Upload failed with status: ${uploadRes.status}`);
+        }
+        // Change payload to contain only the hash
+        encryptedPayload = hashHex;
+        isClaimCheck = true;
+      } catch (err: any) {
+        console.error(`[Volidator] Claim check upload failed: ${err.message}`);
+        // Fall back to original payload and let the worker enforce limits if upload fails
+      }
+    }
 
     return {
       actorBlindIndex,
@@ -581,6 +655,8 @@ export class VolidatorClient {
       tenantBlindIndex,
       traceBlindIndex,
       encryptedPayload,
+      logicalClock: resolvedClock,
+      isClaimCheck,
     };
   }
 
