@@ -1,6 +1,6 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and edge runtimes",
   "license": "MIT",
   "publishConfig": {
