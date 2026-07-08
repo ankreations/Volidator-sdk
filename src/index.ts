@@ -215,6 +215,29 @@ export class VolidatorClient {
   private fallbackLogicalClock = 0;
 
   /**
+   * Thread-local asynchronous context storage used to propagate and automatically
+   * attach trace, span, rationale, and tool context to log events and HTTP headers.
+   */
+  public static readonly agentContextStore: AsyncLocalStorage<{
+    traceId?: string;
+    spanId?: string;
+    rationale?: string;
+    toolName?: string;
+  }> = new AsyncLocalStorage();
+
+  /**
+   * Run an asynchronous execution chain within an active AI Agent context.
+   * Any HTTP client calls or log events executed within this block will automatically
+   * inherit and propagate these headers.
+   */
+  public runInAgentContext<T>(
+    context: { traceId?: string; spanId?: string; rationale?: string; toolName?: string },
+    fn: () => Promise<T>
+  ): Promise<T> {
+    return VolidatorClient.agentContextStore.run(context, fn);
+  }
+
+  /**
    * Increments and returns the current Lamport Logical Clock counter.
    * If a logicalClockStore context is active, it reads, syncs, and updates
    * the thread-scoped clock; otherwise, it falls back to a global instance-scoped counter.
@@ -688,6 +711,17 @@ export class VolidatorClient {
     let parentSpanId = payload.parentSpanId;
     let logicalClock = payload.logicalClock;
 
+    // Check thread-local async context store for agent credentials/trace
+    const agentCtx = VolidatorClient.agentContextStore.getStore();
+    if (agentCtx) {
+      if (!traceId && agentCtx.traceId) {
+        traceId = agentCtx.traceId;
+      }
+      if (!spanId && agentCtx.spanId) {
+        spanId = agentCtx.spanId;
+      }
+    }
+
     if (payload.req) {
       const extractedTrace = VolidatorClient.extractTraceContext(payload.req);
       if (!traceId && extractedTrace.traceId) {
@@ -750,6 +784,20 @@ export class VolidatorClient {
       }
     }
 
+    const rationale = payload.rationale || agentCtx?.rationale;
+    const toolName = payload.toolName || agentCtx?.toolName;
+
+    let agentContext: string | null = null;
+    if (rationale || toolName) {
+      const truncatedRationale = rationale ? rationale.slice(0, 1000) : undefined;
+      agentContext = await this.encryptPayload({
+        rationale: truncatedRationale,
+        toolName: toolName,
+      });
+    }
+
+    const attestationProof = payload.attestation ? JSON.stringify(payload.attestation) : null;
+
     return {
       actorBlindIndex,
       actionBlindIndex,
@@ -759,6 +807,8 @@ export class VolidatorClient {
       encryptedPayload,
       logicalClock: resolvedClock,
       isClaimCheck,
+      agentContext,
+      attestationProof,
     };
   }
 
@@ -1136,6 +1186,94 @@ export class VolidatorClient {
       default: return 7200;
     }
   }
+
+  /**
+   * Request WebAuthn biometric action attestation for a high-risk action.
+   * Prompts the browser for TouchID/FaceID/YubiKey and returns the attestation bundle.
+   */
+  async attestHumanAction(payload: {
+    action: string;
+    target?: string;
+    metadata?: Record<string, any>;
+  }): Promise<{
+    challenge: string;
+    signature: string;
+    authenticatorData: string;
+    clientDataJSON: string;
+    credentialId: string;
+  }> {
+    const res = await fetch(`${this.endpoint}/v1/attestation/challenge`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to retrieve attestation challenge: ${res.statusText}`);
+    }
+
+    const { challenge } = await res.json() as { challenge: string };
+
+    const canonicalStr = canonicalize({
+      action: payload.action,
+      target: payload.target || null,
+      metadata: payload.metadata || null,
+    });
+    
+    const encoder = new TextEncoder();
+    const data = encoder.encode(canonicalStr);
+    const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", data);
+    const hashArray = new Uint8Array(hashBuffer);
+    
+    const challengeBytes = encoder.encode(challenge);
+    
+    const finalChallengeBytes = new Uint8Array(challengeBytes.length + 1 + hashArray.length);
+    finalChallengeBytes.set(challengeBytes, 0);
+    finalChallengeBytes[challengeBytes.length] = 58; // ":" character
+    finalChallengeBytes.set(hashArray, challengeBytes.length + 1);
+
+    const finalHashBuffer = await globalThis.crypto.subtle.digest("SHA-256", finalChallengeBytes);
+    const webauthnChallengeBytes = new Uint8Array(finalHashBuffer);
+
+    if (typeof window === "undefined" || !window.navigator?.credentials) {
+      throw new Error("Action Attestation is only supported in browser environments with WebAuthn.");
+    }
+
+    const credential = await window.navigator.credentials.get({
+      publicKey: {
+        challenge: webauthnChallengeBytes,
+        timeout: 900000, // 15 minutes
+        userVerification: "required",
+      },
+    }) as any;
+
+    if (!credential) {
+      throw new Error("Biometric assertion failed or cancelled by user.");
+    }
+
+    const bufferToBase64url = (buf: ArrayBuffer): string => {
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary)
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=/g, "");
+    };
+
+    return {
+      challenge,
+      signature: bufferToBase64url(credential.response.signature),
+      authenticatorData: bufferToBase64url(credential.response.authenticatorData),
+      clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+      credentialId: credential.id,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,4 +1466,32 @@ export class VolidatorAgent {
   }): Promise<boolean> {
     return this.logAgent("agent.handoff", "Article 12", "MAP 1.6", "CC6.6", "A.12.4.1", payload);
   }
+}
+
+function canonicalize(obj: any): string {
+  if (obj === undefined) return "";
+  if (obj === null) return "null";
+  if (typeof obj !== "object") {
+    return JSON.stringify(obj);
+  }
+  if (obj instanceof Date) {
+    return JSON.stringify(obj.toJSON());
+  }
+  if (Array.isArray(obj)) {
+    const items = obj.map(item => {
+      const val = canonicalize(item);
+      return val === "" ? "null" : val;
+    });
+    return "[" + items.join(",") + "]";
+  }
+  const keys = Object.keys(obj).sort();
+  const pairs: string[] = [];
+  for (const k of keys) {
+    const val = obj[k];
+    if (val === undefined || typeof val === "function" || typeof val === "symbol") {
+      continue;
+    }
+    pairs.push(JSON.stringify(k) + ":" + canonicalize(val));
+  }
+  return "{" + pairs.join(",") + "}";
 }

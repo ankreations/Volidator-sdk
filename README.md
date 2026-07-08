@@ -21,10 +21,13 @@ Volidator encrypts every log entry locally — on your server — before sending
 
 Traditional logging tools force a dangerous compromise: either send raw customer data to a third-party logging vendor (creating security liabilities, compliance issues, and API keys leakage risks), or spend months building a custom, secure compliance database in-house.
 
-Volidator solves this with **Zero-Knowledge Audit Trails**:
+Volidator solves this with a **Zero-Knowledge, High-Accountability Audit Ledger**:
 * **Enterprise Compliance in Minutes:** Unlocks enterprise-ready audit logging matching SOC 2 (CC6.x), ISO 27001 (A.12.4), HIPAA, and GDPR standards under 5 minutes.
 * **Zero Trust Security:** Even if Volidator's databases were compromised, hackers see only randomized ciphertext. Decryption keys live exclusively in your server environment variables and the user's browser hash fragments.
-* **AI Agent Action Auditing & Accountability:** Autonomous AI agents make decisions, run API calls, and modify databases. Volidator provides a tamper-proof ledger to trace exactly *which* agent tool was executed, *why* (LLM prompt/context), and *what* was modified, satisfying critical alignment and security monitoring requirements.
+* **AI Agent Attribution & Accountability:** Structurally validates the caller type (`human`, `agent`, or `service`) at Layer 0 (under 1µs) using prefix taxonomies (`val_human_`, `val_agent_`, `val_service_`). Automatically detects credential handovers if human keys are used inside agent contexts.
+* **WebAuthn Biometric Attestation:** Cryptographically binds high-risk human operations (like approvals) using browser WebAuthn browser enclaves (FaceID/TouchID/YubiKey) with atomic challenge invalidation to prevent concurrent replay attacks.
+* **Asynchronous Context Propagation:** Automatically tracks reasoning rationales, tracing spans, and causal logical clocks across complex asynchronous loops using thread-local V8 `AsyncLocalStorage` stores.
+* **Claim-Check Large Payload Support:** Streams encrypted log components exceeding 30KB automatically to secure Cloudflare R2 object storage, maintaining instant query performance while keeping zero-knowledge client decryption intact.
 * **Instant Customer-Facing Dashboards:** Embed fully-interactive, securely hydrated log tables inside your React frontends using our signed JIT tokens.
 
 ---

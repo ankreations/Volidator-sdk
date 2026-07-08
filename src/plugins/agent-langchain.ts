@@ -32,14 +32,18 @@ export class VolidatorLangChainHandler {
     this.tenant = config.tenant;
   }
 
-  /**
-   * Called when a tool starts executing.
-   */
   async handleToolStart(
     tool: LangChainToolRun,
     input: string,
     runId: string
   ): Promise<void> {
+    const rationale = `Executing tool ${tool.name || "unnamed_tool"} with input: ${input.slice(0, 100)}`;
+    VolidatorClient.agentContextStore.enterWith({
+      traceId: runId,
+      toolName: tool.name || "unnamed_tool",
+      rationale,
+    });
+
     this.runMap.set(runId, {
       toolName: tool.name || "unnamed_tool",
       toolInput: { input },
