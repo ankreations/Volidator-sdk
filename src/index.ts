@@ -130,6 +130,23 @@ export interface LogPayload {
    * If true, indicates the log payload is stored externally in R2
    */
   isClaimCheck?: boolean;
+  /**
+   * Optional thought pattern/rationale behind this action. Truncated to 1000 characters and E2EE.
+   */
+  rationale?: string;
+  /**
+   * Optional tool name associated with this agent action. E2EE.
+   */
+  toolName?: string;
+  /**
+   * Optional WebAuthn attestation signature package for high-risk action verification.
+   */
+  attestation?: {
+    challenge: string;
+    signature: string;
+    authenticatorData: string;
+    credentialId: string;
+  };
 }
 
 interface EmbedTokenViewConfig {
