@@ -1,10 +1,10 @@
-import { VolidatorClient, LogPayload } from "../index";
+import type { LogPayload, VolidatorClient } from "../index";
 import { withVolidator } from "../middleware/next";
 
 export interface UniversalAuditConfig {
   /** The Volidator instance */
   client: VolidatorClient;
-  /** 
+  /**
    * A callback to extract the actor's user ID from the request or your auth provider.
    * Works universally with Auth0, BetterAuth, NextAuth, Kinde, Supabase, etc.
    */
@@ -25,10 +25,10 @@ export function createUniversalAudit({
   getSession,
   getMetadata,
 }: UniversalAuditConfig): <T extends (req: Request, ctx: any) => any>(
-  handler: T
+  handler: T,
 ) => (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
   return function withAuthAudit<T extends (req: Request, ctx: any) => any>(
-    handler: T
+    handler: T,
   ): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
     // Wrap with the base Next.js middleware first (extracts IP & User Agent)
     const baseHandler = withVolidator(client, async (req: Request, ctx: any) => {
@@ -65,7 +65,7 @@ export function createUniversalAudit({
         if (Object.keys(injectedMetadata).length > 0) {
           enrichedPayload.metadata = {
             ...injectedMetadata,
-            ...(enrichedPayload.metadata || {})
+            ...(enrichedPayload.metadata || {}),
           };
         }
 

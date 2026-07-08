@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VolidatorClient } from "../index";
 
 const TEST_KEY = "volidator-test-key-32-chars-xyzw";
@@ -10,13 +10,19 @@ async function decryptPayload(encrypted: string, rawKey: string): Promise<any> {
   const ciphertext = bytes.slice(12);
   const keyHash = await globalThis.crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(rawKey)
+    new TextEncoder().encode(rawKey),
   );
   const cryptoKey = await globalThis.crypto.subtle.importKey(
-    "raw", keyHash, { name: "AES-GCM" }, false, ["decrypt"]
+    "raw",
+    keyHash,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"],
   );
   const plain = await globalThis.crypto.subtle.decrypt(
-    { name: "AES-GCM", iv }, cryptoKey, ciphertext
+    { name: "AES-GCM", iv },
+    cryptoKey,
+    ciphertext,
   );
   return JSON.parse(new TextDecoder().decode(plain));
 }
@@ -44,7 +50,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
   it("logs toolCall with correct metadata and mapped parameters", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     await client.agent.toolCall({
       actor: "research-agent",
       toolName: "web_search",
@@ -70,7 +76,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
   it("logs decision with correct details", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     await client.agent.decision({
       actor: "decision-engine",
       decision: "reject_loan",
@@ -82,7 +88,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
     const body = fetchSpy.getLastBody();
     const decrypted = await decryptPayload(body.encryptedPayload, TEST_KEY);
-    
+
     expect(decrypted.action).toBe("agent.decision");
     expect(decrypted.metadata.decision).toBe("reject_loan");
     expect(decrypted.metadata.alternatives).toEqual(["approve_loan", "request_more_docs"]);
@@ -95,7 +101,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
   it("logs escalation requiring human review", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     await client.agent.escalation({
       actor: "agent-alpha",
       reason: "high-value transaction confirmation required",
@@ -116,7 +122,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
   it("logs anomalies correctly", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     await client.agent.anomaly({
       actor: "guardrail-agent",
       description: "suspected prompt injection payload detected",
@@ -137,7 +143,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
   it("logs safety refusal", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     await client.agent.refusal({
       actor: "safety-guard",
       refusedInstruction: "write code to exploit server",
@@ -158,7 +164,7 @@ describe("VolidatorAgent Taxonomy", () => {
 
   it("logs execution handoffs", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     await client.agent.handoff({
       actor: "orchestrator",
       toAgentId: "coder-agent",
@@ -177,33 +183,37 @@ describe("VolidatorAgent Taxonomy", () => {
     expect(decrypted.metadata.nist_ai_rmf).toBe("MAP 1.6");
   });
 
-  it("allows metadata size up to 64KB on agent pathways", async () => {
+  it("allows metadata size up to 5MB on agent pathways using Claim Check R2", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
-    // Create large 20KB metadata object
+
+    // Create large 250KB metadata object
     const largeObj: Record<string, string> = {};
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 250; i++) {
       largeObj[`key_${i}`] = "x".repeat(1000);
     }
 
-    await expect(client.agent.toolCall({
-      actor: "test",
-      toolName: "huge-runner",
-      success: true,
-      toolOutput: largeObj,
-    })).resolves.toBe(true);
+    await expect(
+      client.agent.toolCall({
+        actor: "test",
+        toolName: "huge-runner",
+        success: true,
+        toolOutput: largeObj,
+      }),
+    ).resolves.toBe(true);
 
-    // Verify it still throws if it goes past the 64KB agent limit
+    // Verify it still throws if it goes past the 5MB hard limit
     const hugeObj: Record<string, string> = {};
-    for (let i = 0; i < 70; i++) {
+    for (let i = 0; i < 5200; i++) {
       hugeObj[`key_${i}`] = "x".repeat(1000);
     }
-    await expect(client.agent.toolCall({
-      actor: "test",
-      toolName: "huge-runner",
-      success: true,
-      toolOutput: hugeObj,
-    })).rejects.toThrow(/exceeds maximum allowed limit/);
+    await expect(
+      client.agent.toolCall({
+        actor: "test",
+        toolName: "huge-runner",
+        success: true,
+        toolOutput: hugeObj,
+      }),
+    ).rejects.toThrow(/exceeds the 5MB hard limit/);
   });
 });
 
@@ -221,7 +231,7 @@ describe("VolidatorClient Batch Logging", () => {
 
   it("prepares and sends multiple log entries in a single request", async () => {
     const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-    
+
     const res = await client.logBatch([
       { actor: "agent-1", action: "test-action-1" },
       { actor: "agent-2", action: "test-action-2" },
@@ -229,13 +239,13 @@ describe("VolidatorClient Batch Logging", () => {
 
     expect(res).toEqual({ accepted: 2, rejected: 0 });
     expect(fetchSpy.spy).toHaveBeenCalledTimes(1);
-    
+
     const fetchArgs = fetchSpy.spy.mock.calls[0];
     expect(fetchArgs[0]).toMatch(/\/v1\/logs\/batch$/);
-    
+
     const body = fetchSpy.getLastBody();
     expect(body.logs).toHaveLength(2);
-    
+
     const e1 = await decryptPayload(body.logs[0].encryptedPayload, TEST_KEY);
     const e2 = await decryptPayload(body.logs[1].encryptedPayload, TEST_KEY);
     expect(e1.actor).toBe("agent-1");

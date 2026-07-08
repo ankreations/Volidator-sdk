@@ -1,4 +1,4 @@
-import { VolidatorClient, LogPayload } from "../index";
+import { type LogPayload, VolidatorClient } from "../index";
 
 /**
  * Next.js App Router Middleware for Volidator.
@@ -9,7 +9,7 @@ import { VolidatorClient, LogPayload } from "../index";
  */
 export function withVolidator<T extends Function>(
   client: VolidatorClient,
-  handler: T
+  handler: T,
 ): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
   return async (req: Request, ctx: any = {}, ...args: any[]) => {
     const extractedContext = VolidatorClient.extractContext(req);
@@ -45,7 +45,7 @@ export function withVolidator<T extends Function>(
       action: string,
       soc2Control: string,
       isoControl: string,
-      payload: Omit<LogPayload, "action">
+      payload: Omit<LogPayload, "action">,
     ) =>
       scopedLog({
         ...payload,

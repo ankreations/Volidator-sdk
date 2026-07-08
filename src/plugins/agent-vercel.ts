@@ -1,4 +1,4 @@
-import { VolidatorClient } from "../index";
+import type { VolidatorClient } from "../index";
 
 export interface VercelAISDKHandlerConfig {
   /** The actor identifier (e.g., usr_alice, research-agent) to log the event under */
@@ -9,21 +9,21 @@ export interface VercelAISDKHandlerConfig {
 
 /**
  * createVercelAISDKCallback
- * 
+ *
  * Returns an `onStepFinish` callback hook compatible with the Vercel AI SDK (`generateText` and `streamText`).
  * Automatically instruments and logs all tool invocations and outcomes.
- * 
+ *
  * Note: Latency metrics are step-bound/approximated at the step level due to Vercel AI SDK's step-level event aggregation.
  */
 export function createVercelAISDKCallback(
   client: VolidatorClient,
-  config: VercelAISDKHandlerConfig
+  config: VercelAISDKHandlerConfig,
 ): (event: any) => Promise<void> {
   return async (event: any): Promise<void> => {
     try {
       const toolResults = event.toolResults || [];
       const toolCalls = event.toolCalls || [];
-      
+
       const loggedCalls = new Set<string>();
 
       // 1. Log all successful tool results

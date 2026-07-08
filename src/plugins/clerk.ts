@@ -1,4 +1,4 @@
-import { VolidatorClient, LogPayload } from "../index";
+import type { LogPayload, VolidatorClient } from "../index";
 import { withVolidator } from "../middleware/next";
 
 export interface ClerkAuditConfig {
@@ -16,10 +16,10 @@ export function createClerkAudit({
   client,
   getAuth,
 }: ClerkAuditConfig): <T extends (req: Request, ctx: any) => any>(
-  handler: T
+  handler: T,
 ) => (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
   return function withClerkAudit<T extends (req: Request, ctx: any) => any>(
-    handler: T
+    handler: T,
   ): (req: Request, ctx?: any, ...args: any[]) => Promise<any> {
     // Wrap with the base Next.js middleware first
     const baseHandler = withVolidator(client, async (req: Request, ctx: any) => {

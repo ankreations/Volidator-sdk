@@ -22,8 +22,9 @@ export type ReferencePayload = { id: string; pii: string };
  * whose key appears in the `referenceKeys` constructor option.
  * Gives a compile-time error if a developer passes a raw string instead.
  */
-export type EnforceReference<TData, TRefKeys extends keyof TData> =
-  Omit<TData, TRefKeys> & { [K in TRefKeys]: ReferencePayload };
+export type EnforceReference<TData, TRefKeys extends keyof TData> = Omit<TData, TRefKeys> & {
+  [K in TRefKeys]: ReferencePayload;
+};
 
 export interface TelemetryConfig {
   preset?: "strict" | "standard" | "full";
@@ -40,7 +41,7 @@ export interface BatcherOptions {
   autoFlushCount?: number;
   /**
    * Automatically flush and send logs every N milliseconds.
-   * 
+   *
    * ⚠️ SERVERLESS/EDGE CAVEAT:
    * Do not use in serverless/edge environments (e.g. Cloudflare Workers, Vercel Edge)
    * as background timers are not guaranteed to execute after response completion.
@@ -211,7 +212,8 @@ export class VolidatorClient {
    * and increment Lamport logical clock sequences across execution boundaries
    * (e.g. within API requests or serverless handler contexts).
    */
-  public static readonly logicalClockStore: AsyncLocalStorage<{ clock: number }> = new AsyncLocalStorage<{ clock: number }>();
+  public static readonly logicalClockStore: AsyncLocalStorage<{ clock: number }> =
+    new AsyncLocalStorage<{ clock: number }>();
   private fallbackLogicalClock = 0;
 
   /**
@@ -232,7 +234,7 @@ export class VolidatorClient {
    */
   public runInAgentContext<T>(
     context: { traceId?: string; spanId?: string; rationale?: string; toolName?: string },
-    fn: () => Promise<T>
+    fn: () => Promise<T>,
   ): Promise<T> {
     return VolidatorClient.agentContextStore.run(context, fn);
   }
@@ -306,9 +308,11 @@ export class VolidatorClient {
       this.activeKeyId = config.activeEncryptionKeyId;
     } else if (config.encryptionKey) {
       this.activeKeyId = "v1";
-      this.keyring = { "v1": config.encryptionKey };
+      this.keyring = { v1: config.encryptionKey };
     } else {
-      throw new Error("Either encryptionKey OR (keyring AND activeEncryptionKeyId) must be provided in VolidatorClient constructor.");
+      throw new Error(
+        "Either encryptionKey OR (keyring AND activeEncryptionKeyId) must be provided in VolidatorClient constructor.",
+      );
     }
 
     // Limit keyring size to 5 for performance & security
@@ -324,7 +328,9 @@ export class VolidatorClient {
     this.hashedKeyring = {};
 
     // Default to 'standard' preset if nothing is provided
-    this.telemetryConfig = VolidatorClient.resolveTelemetryConfig(config.telemetry || { preset: "standard" });
+    this.telemetryConfig = VolidatorClient.resolveTelemetryConfig(
+      config.telemetry || { preset: "standard" },
+    );
     this.compliance = new VolidatorCompliance(this);
     this.agent = new VolidatorAgent(this);
   }
@@ -346,11 +352,10 @@ export class VolidatorClient {
       return "";
     };
 
-    const rawIp = getHeader("cf-connecting-ip") ||
-      getHeader("x-real-ip") ||
-      getHeader("x-forwarded-for");
+    const rawIp =
+      getHeader("cf-connecting-ip") || getHeader("x-real-ip") || getHeader("x-forwarded-for");
 
-    const ip = rawIp ? rawIp.split(",")[0].trim() : (req?.socket?.remoteAddress || "");
+    const ip = rawIp ? rawIp.split(",")[0].trim() : req?.socket?.remoteAddress || "";
     const userAgent = getHeader("user-agent");
 
     return {
@@ -360,14 +365,18 @@ export class VolidatorClient {
         country: getHeader("cf-ipcountry") || getHeader("x-vercel-ip-country") || "",
         region: getHeader("cf-region-code") || getHeader("x-vercel-ip-country-region") || "",
         city: getHeader("cf-ipcity") || getHeader("x-vercel-ip-city") || "",
-      }
+      },
     };
   }
 
   // ---------------------------------------------------------------------------
   // OpenTelemetry W3C traceparent context parser
   // ---------------------------------------------------------------------------
-  static extractTraceContext(req: any): { traceId?: string; spanId?: string; logicalClock?: number } {
+  static extractTraceContext(req: any): {
+    traceId?: string;
+    spanId?: string;
+    logicalClock?: number;
+  } {
     if (!req) return {};
     const getHeader = (name: string): string => {
       if (typeof req.headers?.get === "function") {
@@ -400,7 +409,9 @@ export class VolidatorClient {
     return result;
   }
 
-  private static resolveTelemetryConfig(config: TelemetryConfig): Required<Omit<TelemetryConfig, "preset">> {
+  private static resolveTelemetryConfig(
+    config: TelemetryConfig,
+  ): Required<Omit<TelemetryConfig, "preset">> {
     const preset = config.preset || "standard";
 
     let ip: "track" | "anonymize" | "skip" = "anonymize";
@@ -433,7 +444,7 @@ export class VolidatorClient {
       return {
         browser: "Volidator Ingest Worker",
         os: "Linux Server",
-        type: "Server"
+        type: "Server",
       };
     }
 
@@ -448,8 +459,8 @@ export class VolidatorClient {
 
     // Simple Browser detection
     if (/chrome|crios/i.test(ua) && !/edge|edg/i.test(ua) && !/opr/i.test(ua)) {
-      const match = ua.match(/(?:chrome|crios)\/([0-9\.]+)/i);
-      browser = `Chrome ${match ? match[1].split('.')[0] : ""}`.trim();
+      const match = ua.match(/(?:chrome|crios)\/([0-9.]+)/i);
+      browser = `Chrome ${match ? match[1].split(".")[0] : ""}`.trim();
     } else if (/safari/i.test(ua) && !/chrome|crios/i.test(ua) && !/android/i.test(ua)) {
       browser = /mobile/i.test(ua) ? "Safari Mobile" : "Safari";
     } else if (/firefox|fxios/i.test(ua)) {
@@ -488,13 +499,19 @@ export class VolidatorClient {
 
   private async generateBlindIndex(value: string, keyBuffer: Uint8Array): Promise<string> {
     const key = await globalThis.crypto.subtle.importKey(
-      "raw", keyBuffer as unknown as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+      "raw",
+      keyBuffer as unknown as BufferSource,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
     );
     const signature = await globalThis.crypto.subtle.sign(
-      "HMAC", key, new TextEncoder().encode(value)
+      "HMAC",
+      key,
+      new TextEncoder().encode(value),
     );
     return Array.from(new Uint8Array(signature))
-      .map(b => b.toString(16).padStart(2, "0"))
+      .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
 
@@ -508,11 +525,17 @@ export class VolidatorClient {
     const activeHashedKey = await this._getHashedKey(this.activeKeyId);
 
     const cryptoKey = await globalThis.crypto.subtle.importKey(
-      "raw", activeHashedKey as unknown as BufferSource, { name: "AES-GCM" }, false, ["encrypt"]
+      "raw",
+      activeHashedKey as unknown as BufferSource,
+      { name: "AES-GCM" },
+      false,
+      ["encrypt"],
     );
 
     const encryptedBuffer = await globalThis.crypto.subtle.encrypt(
-      { name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(text)
+      { name: "AES-GCM", iv },
+      cryptoKey,
+      new TextEncoder().encode(text),
     );
 
     const finalBuffer = new Uint8Array(iv.length + encryptedBuffer.byteLength);
@@ -520,7 +543,7 @@ export class VolidatorClient {
     finalBuffer.set(new Uint8Array(encryptedBuffer), iv.length);
 
     // Convert to base64 safely for edges
-    let binary = '';
+    let binary = "";
     const len = finalBuffer.byteLength;
     for (let i = 0; i < len; i++) {
       binary += String.fromCharCode(finalBuffer[i]);
@@ -539,7 +562,9 @@ export class VolidatorClient {
     const payloadSize = new TextEncoder().encode(JSON.stringify(metadata)).length;
 
     if (payloadSize > PAYLOAD_5MB_LIMIT) {
-      throw new Error(`Volidator SDK Error: Audit log payload exceeds the 5MB hard limit (${payloadSize} bytes).`);
+      throw new Error(
+        `Volidator SDK Error: Audit log payload exceeds the 5MB hard limit (${payloadSize} bytes).`,
+      );
     }
 
     const actorRaw = payload.actor || payload.actorId || "unknown";
@@ -555,8 +580,7 @@ export class VolidatorClient {
 
     const extractPii = (v: string | ReferencePayload): string =>
       typeof v === "object" ? v.pii : v;
-    const extractId = (v: string | ReferencePayload): string =>
-      typeof v === "object" ? v.id : v;
+    const extractId = (v: string | ReferencePayload): string => (typeof v === "object" ? v.id : v);
 
     const actor = truncate(extractPii(actorRaw), 255);
     const target = truncate(extractPii(targetRaw), 255);
@@ -593,7 +617,9 @@ export class VolidatorClient {
       if (payloadCtx.location) {
         context.location.country = payloadCtx.location.country || "";
         context.location.region = payloadCtx.location.region || "";
-        const isFull = payload.telemetry?.preset === "full" || (!payload.telemetry && this.telemetryConfig.ip === "track");
+        const isFull =
+          payload.telemetry?.preset === "full" ||
+          (!payload.telemetry && this.telemetryConfig.ip === "track");
         if (logTelemetry.ip === "track" || isFull) {
           context.location.city = payloadCtx.location.city || "";
         }
@@ -632,7 +658,12 @@ export class VolidatorClient {
     const safeMetadata: Record<string, any> = {};
     for (const [k, v] of Object.entries(rawMetadata)) {
       const metaKey = `metadata.${k}`;
-      if (this.referenceKeys.includes(metaKey) && typeof v === "object" && v !== null && "id" in v) {
+      if (
+        this.referenceKeys.includes(metaKey) &&
+        typeof v === "object" &&
+        v !== null &&
+        "id" in v
+      ) {
         safeMetadata[k] = `[REF:${(v as ReferencePayload).id}]`;
       } else if (this.redactKeys.includes(metaKey) && typeof v === "string") {
         safeMetadata[k] = `[REDACTED:${k}]`;
@@ -660,7 +691,7 @@ export class VolidatorClient {
         return obj;
       }
       if (Array.isArray(obj)) {
-        return obj.map(item => limitDepth(item, currentDepth + 1));
+        return obj.map((item) => limitDepth(item, currentDepth + 1));
       }
       const result: Record<string, any> = {};
       for (const [key, val] of Object.entries(obj)) {
@@ -673,10 +704,14 @@ export class VolidatorClient {
 
     if (typeof process !== "undefined" && process.env?.NODE_ENV !== "production") {
       if (didTruncateDepth) {
-        console.warn("[Volidator] Warning: Log metadata exceeded maximum depth limit (5) and was truncated.");
+        console.warn(
+          "[Volidator] Warning: Log metadata exceeded maximum depth limit (5) and was truncated.",
+        );
       }
       if (didTruncateString) {
-        console.warn("[Volidator] Warning: One or more log metadata string values exceeded the 1000-character limit and were truncated.");
+        console.warn(
+          "[Volidator] Warning: One or more log metadata string values exceeded the 1000-character limit and were truncated.",
+        );
       }
     }
 
@@ -708,7 +743,7 @@ export class VolidatorClient {
     // Auto-extract trace contexts and logical clock from incoming request if present
     let traceId = payload.traceId;
     let spanId = payload.spanId;
-    let parentSpanId = payload.parentSpanId;
+    const parentSpanId = payload.parentSpanId;
     let logicalClock = payload.logicalClock;
 
     // Check thread-local async context store for agent credentials/trace
@@ -748,8 +783,12 @@ export class VolidatorClient {
     const actorBlindIndex = await this.generateBlindIndex(actor, activeKeyBuffer);
     const actionBlindIndex = await this.generateBlindIndex(action, activeKeyBuffer);
     const targetBlindIndex = await this.generateBlindIndex(target, activeKeyBuffer);
-    const tenantBlindIndex = tenant ? await this.generateBlindIndex(tenant, activeKeyBuffer) : undefined;
-    const traceBlindIndex = traceId ? await this.generateBlindIndex(traceId, activeKeyBuffer) : undefined;
+    const tenantBlindIndex = tenant
+      ? await this.generateBlindIndex(tenant, activeKeyBuffer)
+      : undefined;
+    const traceBlindIndex = traceId
+      ? await this.generateBlindIndex(traceId, activeKeyBuffer)
+      : undefined;
 
     let encryptedPayload = await this.encryptPayload(enrichedPayload);
     let isClaimCheck = false;
@@ -759,7 +798,7 @@ export class VolidatorClient {
       const binaryBuffer = new TextEncoder().encode(encryptedPayload);
       const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", binaryBuffer);
       const hashHex = Array.from(new Uint8Array(hashBuffer))
-        .map(b => b.toString(16).padStart(2, "0"))
+        .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
 
       // Upload encrypted payload to edge worker storage endpoint
@@ -818,7 +857,7 @@ export class VolidatorClient {
   private async fetchWithRetry(
     url: string,
     options: RequestInit,
-    maxRetries = this.maxRetries
+    maxRetries = this.maxRetries,
   ): Promise<Response> {
     let attempt = 0;
     let delay = 500;
@@ -889,7 +928,10 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   // logBatch() — Bulk encrypt and ingest a batch of up to 100 audit events
   // ---------------------------------------------------------------------------
-  async logBatch(payloads: LogPayload[], maxMetaOverride?: number): Promise<{ accepted: number; rejected: number }> {
+  async logBatch(
+    payloads: LogPayload[],
+    maxMetaOverride?: number,
+  ): Promise<{ accepted: number; rejected: number }> {
     if (!Array.isArray(payloads) || payloads.length === 0) {
       return { accepted: 0, rejected: 0 };
     }
@@ -900,7 +942,7 @@ export class VolidatorClient {
     let rejected = payloads.length - batch.length;
 
     const results = await Promise.allSettled(
-      batch.map(p => this.prepareLogEntry(p, maxMetaOverride))
+      batch.map((p) => this.prepareLogEntry(p, maxMetaOverride)),
     );
 
     for (const res of results) {
@@ -943,7 +985,9 @@ export class VolidatorClient {
           }
         } catch (cbErr: unknown) {
           const cbErrorObj = cbErr instanceof Error ? cbErr : new Error(String(cbErr));
-          console.error(`[Volidator] Error in onDeliveryFailure callback during batch failure: ${cbErrorObj.message}`);
+          console.error(
+            `[Volidator] Error in onDeliveryFailure callback during batch failure: ${cbErrorObj.message}`,
+          );
         }
       }
       return { accepted: 0, rejected: rejected + preparedEntries.length };
@@ -955,7 +999,7 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   /**
    * Creates a convenience batcher instance for buffering and ingestion.
-   * 
+   *
    * ⚠️ SERVERLESS/EDGE CAVEAT:
    * autoFlushInterval uses setInterval internally. In serverless/edge environments
    * (e.g. Cloudflare Workers, Vercel Edge), the V8 isolate is frozen or destroyed
@@ -965,7 +1009,6 @@ export class VolidatorClient {
    * before returning the response, or wrap it in ctx.waitUntil().
    */
   public batcher(options?: BatcherOptions): VolidatorBatcher {
-    const client = this;
     let buffer: LogPayload[] = [];
     let intervalId: any = null;
 
@@ -988,7 +1031,7 @@ export class VolidatorClient {
         startTimer();
       }
 
-      return client.logBatch(payloadsToFlush);
+      return this.logBatch(payloadsToFlush);
     };
 
     const startTimer = () => {
@@ -1028,16 +1071,18 @@ export class VolidatorClient {
   // ---------------------------------------------------------------------------
   // generateEmbedToken() — Sign a HS256 JWT for the embeddable dashboard widget
   // ---------------------------------------------------------------------------
-  async generateEmbedToken(config: EmbedTokenConfig & {
-    projectId?: string;
-    clientSecret?: string;
-  }): Promise<EmbedTokenResult> {
+  async generateEmbedToken(
+    config: EmbedTokenConfig & {
+      projectId?: string;
+      clientSecret?: string;
+    },
+  ): Promise<EmbedTokenResult> {
     const projectId = config.projectId || this.projectId;
     const clientSecret = config.clientSecret || this.clientSecret;
 
     if (!projectId || !clientSecret) {
       throw new Error(
-        "generateEmbedToken() requires projectId and clientSecret to be provided in either the configuration or the VolidatorClient constructor."
+        "generateEmbedToken() requires projectId and clientSecret to be provided in either the configuration or the VolidatorClient constructor.",
       );
     }
 
@@ -1058,19 +1103,31 @@ export class VolidatorClient {
     // Check if at least one identity parameter is provided (bypassed for auditor scope)
     if (defaultScope !== "auditor" && !actorId && !targetId && !tenantId) {
       throw new Error(
-        "At least one of actorId, targetId, or tenantId must be provided to generateEmbedToken()."
+        "At least one of actorId, targetId, or tenantId must be provided to generateEmbedToken().",
       );
     }
 
     // 1. Compute blind indexes for all keys in the keyring
     const actorBlindIndexes = actorId
-      ? await Promise.all(Object.keys(this.keyring).map(async id => this.generateBlindIndex(actorId, await this._getHashedKey(id))))
+      ? await Promise.all(
+          Object.keys(this.keyring).map(async (id) =>
+            this.generateBlindIndex(actorId, await this._getHashedKey(id)),
+          ),
+        )
       : undefined;
     const targetBlindIndexes = targetId
-      ? await Promise.all(Object.keys(this.keyring).map(async id => this.generateBlindIndex(targetId, await this._getHashedKey(id))))
+      ? await Promise.all(
+          Object.keys(this.keyring).map(async (id) =>
+            this.generateBlindIndex(targetId, await this._getHashedKey(id)),
+          ),
+        )
       : undefined;
     const tenantBlindIndexes = tenantId
-      ? await Promise.all(Object.keys(this.keyring).map(async id => this.generateBlindIndex(tenantId, await this._getHashedKey(id))))
+      ? await Promise.all(
+          Object.keys(this.keyring).map(async (id) =>
+            this.generateBlindIndex(tenantId, await this._getHashedKey(id)),
+          ),
+        )
       : undefined;
 
     // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security.
@@ -1126,9 +1183,7 @@ export class VolidatorClient {
     const keyringString = Object.entries(this.keyring)
       .map(([id, key]) => `${id}:${key}`)
       .join(",");
-    const hostParam = hostOrigin
-      ? `?host=${encodeURIComponent(hostOrigin)}`
-      : "";
+    const hostParam = hostOrigin ? `?host=${encodeURIComponent(hostOrigin)}` : "";
     const embedUrl = `${dashboardUrl}/embed/${token}${hostParam}#${keyringString}`;
 
     return { token, embedUrl };
@@ -1138,7 +1193,7 @@ export class VolidatorClient {
     const buf = new TextEncoder().encode(text);
     const hash = await globalThis.crypto.subtle.digest("SHA-256", buf);
     return Array.from(new Uint8Array(hash))
-      .map(b => b.toString(16).padStart(2, "0"))
+      .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
 
@@ -1146,29 +1201,29 @@ export class VolidatorClient {
     const header = { alg: "HS256", typ: "JWT" };
 
     const encode = (obj: object) =>
-      btoa(JSON.stringify(obj))
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=/g, "");
+      btoa(JSON.stringify(obj)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 
     const unsigned = `${encode(header)}.${encode(payload)}`;
 
     const key = await globalThis.crypto.subtle.importKey(
-      "raw", new TextEncoder().encode(secret) as unknown as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+      "raw",
+      new TextEncoder().encode(secret) as unknown as BufferSource,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
     );
     const signatureBuffer = await globalThis.crypto.subtle.sign(
-      "HMAC", key, new TextEncoder().encode(unsigned)
+      "HMAC",
+      key,
+      new TextEncoder().encode(unsigned),
     );
 
-    let binary = '';
+    let binary = "";
     const arr = new Uint8Array(signatureBuffer);
     for (let i = 0; i < arr.byteLength; i++) {
       binary += String.fromCharCode(arr[i]);
     }
-    const signature = btoa(binary)
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=/g, "");
+    const signature = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 
     return `${unsigned}.${signature}`;
   }
@@ -1179,11 +1234,16 @@ export class VolidatorClient {
     const [, num, unit] = match;
     const n = parseInt(num, 10);
     switch (unit) {
-      case "s": return n;
-      case "m": return n * 60;
-      case "h": return n * 3600;
-      case "d": return n * 86400;
-      default: return 7200;
+      case "s":
+        return n;
+      case "m":
+        return n * 60;
+      case "h":
+        return n * 3600;
+      case "d":
+        return n * 86400;
+      default:
+        return 7200;
     }
   }
 
@@ -1215,21 +1275,21 @@ export class VolidatorClient {
       throw new Error(`Failed to retrieve attestation challenge: ${res.statusText}`);
     }
 
-    const { challenge } = await res.json() as { challenge: string };
+    const { challenge } = (await res.json()) as { challenge: string };
 
     const canonicalStr = canonicalize({
       action: payload.action,
       target: payload.target || null,
       metadata: payload.metadata || null,
     });
-    
+
     const encoder = new TextEncoder();
     const data = encoder.encode(canonicalStr);
     const hashBuffer = await globalThis.crypto.subtle.digest("SHA-256", data);
     const hashArray = new Uint8Array(hashBuffer);
-    
+
     const challengeBytes = encoder.encode(challenge);
-    
+
     const finalChallengeBytes = new Uint8Array(challengeBytes.length + 1 + hashArray.length);
     finalChallengeBytes.set(challengeBytes, 0);
     finalChallengeBytes[challengeBytes.length] = 58; // ":" character
@@ -1239,16 +1299,18 @@ export class VolidatorClient {
     const webauthnChallengeBytes = new Uint8Array(finalHashBuffer);
 
     if (typeof window === "undefined" || !window.navigator?.credentials) {
-      throw new Error("Action Attestation is only supported in browser environments with WebAuthn.");
+      throw new Error(
+        "Action Attestation is only supported in browser environments with WebAuthn.",
+      );
     }
 
-    const credential = await window.navigator.credentials.get({
+    const credential = (await window.navigator.credentials.get({
       publicKey: {
         challenge: webauthnChallengeBytes,
         timeout: 900000, // 15 minutes
         userVerification: "required",
       },
-    }) as any;
+    })) as any;
 
     if (!credential) {
       throw new Error("Biometric assertion failed or cancelled by user.");
@@ -1260,10 +1322,7 @@ export class VolidatorClient {
       for (let i = 0; i < bytes.byteLength; i++) {
         binary += String.fromCharCode(bytes[i]);
       }
-      return btoa(binary)
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=/g, "");
+      return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
     };
 
     return {
@@ -1290,7 +1349,7 @@ export class VolidatorCompliance {
     action: string,
     soc2Control: string,
     isoControl: string,
-    payload: Omit<LogPayload, "action">
+    payload: Omit<LogPayload, "action">,
   ): Promise<boolean> {
     const metadata = {
       ...payload.metadata,
@@ -1341,7 +1400,7 @@ export class VolidatorAgent {
     nistAiRmf: string,
     soc2Control: string,
     isoControl: string,
-    payload: Omit<LogPayload, "action"> & Record<string, any>
+    payload: Omit<LogPayload, "action"> & Record<string, any>,
   ): Promise<boolean> {
     const {
       actor,
@@ -1387,7 +1446,7 @@ export class VolidatorAgent {
         spanId,
         parentSpanId,
       },
-      65536
+      5242880,
     );
   }
 
@@ -1395,51 +1454,80 @@ export class VolidatorAgent {
    * Logs a tool call or external API invocation by an agent.
    * Maps to EU AI Act Article 12, NIST AI RMF MANAGE 2.2, SOC2 CC6.6, ISO 27001 A.12.4.1.
    */
-  async toolCall(payload: Omit<LogPayload, "action"> & {
-    toolName: string;
-    toolInput?: Record<string, any>;
-    toolOutput?: Record<string, any>;
-    latencyMs?: number;
-    success: boolean;
-  }): Promise<boolean> {
-    return this.logAgent("agent.tool_call", "Article 12", "MANAGE 2.2", "CC6.6", "A.12.4.1", payload);
+  async toolCall(
+    payload: Omit<LogPayload, "action"> & {
+      toolName: string;
+      toolInput?: Record<string, any>;
+      toolOutput?: Record<string, any>;
+      latencyMs?: number;
+      success: boolean;
+    },
+  ): Promise<boolean> {
+    return this.logAgent(
+      "agent.tool_call",
+      "Article 12",
+      "MANAGE 2.2",
+      "CC6.6",
+      "A.12.4.1",
+      payload,
+    );
   }
 
   /**
    * Logs a key decision made autonomously by an AI agent model.
    * Maps to EU AI Act Article 12 & 13, NIST AI RMF GOVERN 1.7, SOC2 CC6.2, ISO 27001 A.18.1.3.
    */
-  async decision(payload: Omit<LogPayload, "action"> & {
-    decision: string;
-    alternatives?: string[];
-    rationale?: string;
-    confidenceScore?: number;
-    modelId?: string;
-  }): Promise<boolean> {
-    return this.logAgent("agent.decision", "Article 12 & 13", "GOVERN 1.7", "CC6.2", "A.18.1.3", payload);
+  async decision(
+    payload: Omit<LogPayload, "action"> & {
+      decision: string;
+      alternatives?: string[];
+      rationale?: string;
+      confidenceScore?: number;
+      modelId?: string;
+    },
+  ): Promise<boolean> {
+    return this.logAgent(
+      "agent.decision",
+      "Article 12 & 13",
+      "GOVERN 1.7",
+      "CC6.2",
+      "A.18.1.3",
+      payload,
+    );
   }
 
   /**
    * Logs a request for human review or permission escalation.
    * Maps to EU AI Act Article 14, NIST AI RMF GOVERN 5.1, SOC2 CC6.3, ISO 27001 A.6.1.2.
    */
-  async escalation(payload: Omit<LogPayload, "action"> & {
-    reason: string;
-    urgency?: "low" | "medium" | "high";
-    blockedAction?: string;
-  }): Promise<boolean> {
-    return this.logAgent("agent.escalation", "Article 14", "GOVERN 5.1", "CC6.3", "A.6.1.2", payload);
+  async escalation(
+    payload: Omit<LogPayload, "action"> & {
+      reason: string;
+      urgency?: "low" | "medium" | "high";
+      blockedAction?: string;
+    },
+  ): Promise<boolean> {
+    return this.logAgent(
+      "agent.escalation",
+      "Article 14",
+      "GOVERN 5.1",
+      "CC6.3",
+      "A.6.1.2",
+      payload,
+    );
   }
 
   /**
    * Logs anomalous environment inputs, potential prompt injections, or policy violations.
    * Maps to EU AI Act Article 9, NIST AI RMF MANAGE 2.4, SOC2 CC7.2, ISO 27001 A.16.1.2.
    */
-  async anomaly(payload: Omit<LogPayload, "action"> & {
-    description: string;
-    severity?: "low" | "medium" | "high" | "critical";
-    anomalyType?: "prompt_injection" | "unexpected_input" | "policy_violation" | "other";
-  }): Promise<boolean> {
+  async anomaly(
+    payload: Omit<LogPayload, "action"> & {
+      description: string;
+      severity?: "low" | "medium" | "high" | "critical";
+      anomalyType?: "prompt_injection" | "unexpected_input" | "policy_violation" | "other";
+    },
+  ): Promise<boolean> {
     return this.logAgent("agent.anomaly", "Article 9", "MANAGE 2.4", "CC7.2", "A.16.1.2", payload);
   }
 
@@ -1447,11 +1535,13 @@ export class VolidatorAgent {
    * Logs a model refusal to execute a user prompt or command due to alignment safety.
    * Maps to EU AI Act Article 5, NIST AI RMF GOVERN 1.1, SOC2 CC6.8, ISO 27001 A.18.1.3.
    */
-  async refusal(payload: Omit<LogPayload, "action"> & {
-    refusedInstruction: string;
-    reason: string;
-    policyViolated?: string;
-  }): Promise<boolean> {
+  async refusal(
+    payload: Omit<LogPayload, "action"> & {
+      refusedInstruction: string;
+      reason: string;
+      policyViolated?: string;
+    },
+  ): Promise<boolean> {
     return this.logAgent("agent.refusal", "Article 5", "GOVERN 1.1", "CC6.8", "A.18.1.3", payload);
   }
 
@@ -1459,11 +1549,13 @@ export class VolidatorAgent {
    * Logs an execution context handoff from one agent to another.
    * Maps to EU AI Act Article 12, NIST AI RMF MAP 1.6, SOC2 CC6.6, ISO 27001 A.12.4.1.
    */
-  async handoff(payload: Omit<LogPayload, "action"> & {
-    toAgentId: string;
-    instruction: string;
-    agentContext?: Record<string, any>;
-  }): Promise<boolean> {
+  async handoff(
+    payload: Omit<LogPayload, "action"> & {
+      toAgentId: string;
+      instruction: string;
+      agentContext?: Record<string, any>;
+    },
+  ): Promise<boolean> {
     return this.logAgent("agent.handoff", "Article 12", "MAP 1.6", "CC6.6", "A.12.4.1", payload);
   }
 }
@@ -1478,7 +1570,7 @@ function canonicalize(obj: any): string {
     return JSON.stringify(obj.toJSON());
   }
   if (Array.isArray(obj)) {
-    const items = obj.map(item => {
+    const items = obj.map((item) => {
       const val = canonicalize(item);
       return val === "" ? "null" : val;
     });

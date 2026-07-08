@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VolidatorClient } from "../index";
 import { VolidatorLangChainHandler } from "../plugins/agent-langchain";
 import { createVercelAISDKCallback } from "../plugins/agent-vercel";
@@ -12,13 +12,19 @@ async function decryptPayload(encrypted: string, rawKey: string): Promise<any> {
   const ciphertext = bytes.slice(12);
   const keyHash = await globalThis.crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(rawKey)
+    new TextEncoder().encode(rawKey),
   );
   const cryptoKey = await globalThis.crypto.subtle.importKey(
-    "raw", keyHash, { name: "AES-GCM" }, false, ["decrypt"]
+    "raw",
+    keyHash,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"],
   );
   const plain = await globalThis.crypto.subtle.decrypt(
-    { name: "AES-GCM", iv }, cryptoKey, ciphertext
+    { name: "AES-GCM", iv },
+    cryptoKey,
+    ciphertext,
   );
   return JSON.parse(new TextDecoder().decode(plain));
 }
@@ -47,7 +53,10 @@ describe("Volidator Plugins", () => {
   describe("VolidatorLangChainHandler", () => {
     it("intercepts tool execution start/end lifecycles and logs successful toolCall", async () => {
       const client = new VolidatorClient({ apiKey: "test", encryptionKey: TEST_KEY });
-      const handler = new VolidatorLangChainHandler(client, { actor: "test-langchain-agent", tenant: "t-1" });
+      const handler = new VolidatorLangChainHandler(client, {
+        actor: "test-langchain-agent",
+        tenant: "t-1",
+      });
 
       const runId = "test-run-123";
       await handler.handleToolStart({ name: "math_calculator" }, "2 + 2", runId);
@@ -98,11 +107,14 @@ describe("Volidator Plugins", () => {
 
       // Mock Vercel AI SDK step completion event
       await callback({
-        toolCalls: [
-          { toolName: "weather_lookup", args: { city: "London" }, toolCallId: "c-1" }
-        ],
+        toolCalls: [{ toolName: "weather_lookup", args: { city: "London" }, toolCallId: "c-1" }],
         toolResults: [
-          { toolName: "weather_lookup", args: { city: "London" }, toolCallId: "c-1", result: { temp: 18 } }
+          {
+            toolName: "weather_lookup",
+            args: { city: "London" },
+            toolCallId: "c-1",
+            result: { temp: 18 },
+          },
         ],
       });
 
@@ -124,9 +136,7 @@ describe("Volidator Plugins", () => {
 
       // Mock step with tool call but no matching tool result (e.g. aborted)
       await callback({
-        toolCalls: [
-          { toolName: "db_query", args: { table: "users" }, toolCallId: "c-2" }
-        ],
+        toolCalls: [{ toolName: "db_query", args: { table: "users" }, toolCallId: "c-2" }],
         toolResults: [],
       });
 
@@ -137,7 +147,9 @@ describe("Volidator Plugins", () => {
       expect(decrypted.action).toBe("agent.tool_call");
       expect(decrypted.metadata.toolName).toBe("db_query");
       expect(decrypted.metadata.toolInput).toEqual({ args: { table: "users" } });
-      expect(decrypted.metadata.toolOutput).toEqual({ error: "Execution failed or returned no result" });
+      expect(decrypted.metadata.toolOutput).toEqual({
+        error: "Execution failed or returned no result",
+      });
       expect(decrypted.metadata.success).toBe(false);
     });
   });

@@ -21,7 +21,7 @@ function buildCrc32Table(): Uint32Array {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i++) {
     let c = i;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
     table[i] = c;
   }
   return table;
@@ -29,20 +29,29 @@ function buildCrc32Table(): Uint32Array {
 const CRC32_TABLE = buildCrc32Table();
 
 function crc32hex(str: string): string {
-  let crc = 0xFFFFFFFF;
+  let crc = 0xffffffff;
   for (let i = 0; i < str.length; i++) {
-    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ str.charCodeAt(i)) & 0xFF];
+    crc = (crc >>> 8) ^ CRC32_TABLE[(crc ^ str.charCodeAt(i)) & 0xff];
   }
-  return ((crc ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, "0").slice(0, 6);
+  return ((crc ^ 0xffffffff) >>> 0).toString(16).padStart(8, "0").slice(0, 6);
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function log(msg: string) { console.log(msg); }
-function ok(msg: string) { console.log(`  ✅ ${msg}`); }
-function fail(msg: string) { console.error(`  ❌ ${msg}`); process.exitCode = 1; }
-function section(title: string) { console.log(`\n${"─".repeat(50)}\n${title}\n${"─".repeat(50)}`); }
+function log(msg: string) {
+  console.log(msg);
+}
+function ok(msg: string) {
+  console.log(`  ✅ ${msg}`);
+}
+function fail(msg: string) {
+  console.error(`  ❌ ${msg}`);
+  process.exitCode = 1;
+}
+function section(title: string) {
+  console.log(`\n${"─".repeat(50)}\n${title}\n${"─".repeat(50)}`);
+}
 
 async function assertStatus(label: string, res: Response, expected: number) {
   if (res.status === expected) {
@@ -75,7 +84,7 @@ async function testFullPipeline() {
 
   await assertStatus("POST /v1/projects", provisionRes, 201);
 
-  const provisionData = await provisionRes.json() as any;
+  const provisionData = (await provisionRes.json()) as any;
   const apiKey: string = provisionData.project?.apiKey;
   const projectId: string = provisionData.project?.id;
   const keyPrefix: string = provisionData.project?.apiKeyPrefix;
@@ -130,7 +139,7 @@ async function testFullPipeline() {
   // ── Step 4: Second ingestion — KV cache hit ───────────────────────────────
   section("Step 4 — Second ingestion (KV cache hit — should be faster)");
 
-  await new Promise(r => setTimeout(r, 200)); // small gap to ensure KV write completed
+  await new Promise((r) => setTimeout(r, 200)); // small gap to ensure KV write completed
 
   const t2 = Date.now();
   const log2Res = await fetch(`${INGEST_URL}/v1/log`, {
@@ -148,7 +157,9 @@ async function testFullPipeline() {
   const t2ms = Date.now() - t2;
 
   await assertStatus("POST /v1/log (cache hit)", log2Res, 202);
-  ok(`Round-trip: ${t2ms}ms ${t2ms < t1ms ? "(faster ✓)" : "(no cache speed-up — expected in local dev)"}`);
+  ok(
+    `Round-trip: ${t2ms}ms ${t2ms < t1ms ? "(faster ✓)" : "(no cache speed-up — expected in local dev)"}`,
+  );
 
   // ── Step 5: Malformed key rejection ──────────────────────────────────────
   section("Step 5 — Structural rejection (typo'd key, zero I/O)");
@@ -182,7 +193,7 @@ async function testFullPipeline() {
   // ── Step 7: Verify key is now rejected ───────────────────────────────────
   section("Step 7 — Post-revocation rejection");
 
-  await new Promise(r => setTimeout(r, 300)); // give KV eviction time to settle locally
+  await new Promise((r) => setTimeout(r, 300)); // give KV eviction time to settle locally
 
   const postDeleteRes = await fetch(`${INGEST_URL}/v1/log`, {
     method: "POST",
@@ -206,7 +217,7 @@ async function testFullPipeline() {
   }
 }
 
-testFullPipeline().catch(e => {
+testFullPipeline().catch((e) => {
   console.error("Fatal:", e);
   process.exit(1);
 });

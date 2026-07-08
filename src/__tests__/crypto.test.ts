@@ -11,7 +11,7 @@
  * No mocking required.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { VolidatorClient } from "../index";
 
 // ---------------------------------------------------------------------------
@@ -50,13 +50,13 @@ async function decryptPayload(encrypted: string, rawKey: string): Promise<any> {
     keyHash,
     { name: "AES-GCM" },
     false,
-    ["decrypt"]
+    ["decrypt"],
   );
 
   const plaintext = await globalThis.crypto.subtle.decrypt(
     { name: "AES-GCM", iv },
     cryptoKey,
-    ciphertext
+    ciphertext,
   );
 
   return JSON.parse(new TextDecoder().decode(plaintext));
@@ -168,10 +168,7 @@ describe("encryptPayload", () => {
 describe("signHS256JWT", () => {
   it("produces a valid 3-part dot-separated JWT", async () => {
     const client = makeClient() as any;
-    const token = await client.signHS256JWT(
-      { sub: "usr_123", iat: 1000, exp: 9999 },
-      "my-secret"
-    );
+    const token = await client.signHS256JWT({ sub: "usr_123", iat: 1000, exp: 9999 }, "my-secret");
     const parts = token.split(".");
     expect(parts).toHaveLength(3);
   });
@@ -239,9 +236,7 @@ describe("parseExpiry", () => {
 
 describe("VolidatorClient constructor", () => {
   it("throws if no encryption key is provided", () => {
-    expect(
-      () => new VolidatorClient({ apiKey: "key" } as any)
-    ).toThrow();
+    expect(() => new VolidatorClient({ apiKey: "key" } as any)).toThrow();
   });
 
   it("throws if keyring is provided without activeEncryptionKeyId", () => {
@@ -250,7 +245,7 @@ describe("VolidatorClient constructor", () => {
         new VolidatorClient({
           apiKey: "key",
           keyring: { v1: TEST_KEY },
-        } as any)
+        } as any),
     ).toThrow();
   });
 
@@ -261,7 +256,7 @@ describe("VolidatorClient constructor", () => {
           apiKey: "key",
           keyring: { v1: "a", v2: "b", v3: "c", v4: "d", v5: "e", v6: "f" },
           activeEncryptionKeyId: "v1",
-        })
+        }),
     ).toThrow(/exceed 5/);
   });
 
@@ -272,7 +267,7 @@ describe("VolidatorClient constructor", () => {
           apiKey: "key",
           keyring: { v1: TEST_KEY },
           activeEncryptionKeyId: "v2",
-        })
+        }),
     ).toThrow(/must exist in the keyring/);
   });
 

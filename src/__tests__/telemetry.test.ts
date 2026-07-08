@@ -4,8 +4,8 @@
  * Tests: resolveTelemetryConfig (via private static), extractContext (public static)
  */
 
-import { describe, it, expect } from "vitest";
-import { VolidatorClient, TelemetryConfig } from "../index";
+import { describe, expect, it } from "vitest";
+import { type TelemetryConfig, VolidatorClient } from "../index";
 
 // ---------------------------------------------------------------------------
 // resolveTelemetryConfig (accessed via private static cast)
@@ -92,50 +92,46 @@ describe("extractContext — Cloudflare Workers headers", () => {
   }
 
   it("extracts IP from cf-connecting-ip", () => {
-    const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "cf-connecting-ip": "1.2.3.4" })
-    );
+    const ctx = VolidatorClient.extractContext(makeCfRequest({ "cf-connecting-ip": "1.2.3.4" }));
     expect(ctx.ip).toBe("1.2.3.4");
   });
 
   it("falls back to x-real-ip if cf-connecting-ip is absent", () => {
-    const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "x-real-ip": "5.6.7.8" })
-    );
+    const ctx = VolidatorClient.extractContext(makeCfRequest({ "x-real-ip": "5.6.7.8" }));
     expect(ctx.ip).toBe("5.6.7.8");
   });
 
   it("falls back to x-forwarded-for and takes first IP", () => {
     const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "x-forwarded-for": "9.10.11.12, 13.14.15.16" })
+      makeCfRequest({ "x-forwarded-for": "9.10.11.12, 13.14.15.16" }),
     );
     expect(ctx.ip).toBe("9.10.11.12");
   });
 
   it("extracts country from cf-ipcountry", () => {
     const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "cf-connecting-ip": "1.2.3.4", "cf-ipcountry": "US" })
+      makeCfRequest({ "cf-connecting-ip": "1.2.3.4", "cf-ipcountry": "US" }),
     );
     expect(ctx.location?.country).toBe("US");
   });
 
   it("extracts region from cf-region-code", () => {
     const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "cf-connecting-ip": "1.2.3.4", "cf-region-code": "CA" })
+      makeCfRequest({ "cf-connecting-ip": "1.2.3.4", "cf-region-code": "CA" }),
     );
     expect(ctx.location?.region).toBe("CA");
   });
 
   it("extracts city from cf-ipcity", () => {
     const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "cf-connecting-ip": "1.2.3.4", "cf-ipcity": "San Francisco" })
+      makeCfRequest({ "cf-connecting-ip": "1.2.3.4", "cf-ipcity": "San Francisco" }),
     );
     expect(ctx.location?.city).toBe("San Francisco");
   });
 
   it("extracts User-Agent header", () => {
     const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "user-agent": "Mozilla/5.0 Chrome/124" })
+      makeCfRequest({ "user-agent": "Mozilla/5.0 Chrome/124" }),
     );
     expect(ctx.userAgent).toBe("Mozilla/5.0 Chrome/124");
   });
@@ -155,15 +151,13 @@ describe("extractContext — Vercel headers", () => {
   }
 
   it("extracts country from x-vercel-ip-country", () => {
-    const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "x-vercel-ip-country": "DE" })
-    );
+    const ctx = VolidatorClient.extractContext(makeCfRequest({ "x-vercel-ip-country": "DE" }));
     expect(ctx.location?.country).toBe("DE");
   });
 
   it("extracts region from x-vercel-ip-country-region", () => {
     const ctx = VolidatorClient.extractContext(
-      makeCfRequest({ "x-vercel-ip-country-region": "BY" })
+      makeCfRequest({ "x-vercel-ip-country-region": "BY" }),
     );
     expect(ctx.location?.region).toBe("BY");
   });
@@ -213,12 +207,12 @@ describe("extractTraceContext — W3C traceparent headers", () => {
 
   it("handles standard Headers get interface", () => {
     const headersMap = new Map([
-      ["traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"]
+      ["traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"],
     ]);
     const req = {
       headers: {
-        get: (name: string) => headersMap.get(name.toLowerCase()) || null
-      }
+        get: (name: string) => headersMap.get(name.toLowerCase()) || null,
+      },
     };
     const traceCtx = VolidatorClient.extractTraceContext(req);
     expect(traceCtx.traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");

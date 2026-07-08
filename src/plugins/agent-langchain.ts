@@ -16,7 +16,7 @@ export interface LangChainHandlerConfig {
 
 /**
  * VolidatorLangChainHandler
- * 
+ *
  * A callback handler to automatically instrument LangChain tool calls and log them to Volidator.
  * Avoids memory leaks by cleanly disposing of run trace contexts using .delete(runId).
  */
@@ -32,11 +32,7 @@ export class VolidatorLangChainHandler {
     this.tenant = config.tenant;
   }
 
-  async handleToolStart(
-    tool: LangChainToolRun,
-    input: string,
-    runId: string
-  ): Promise<void> {
+  async handleToolStart(tool: LangChainToolRun, input: string, runId: string): Promise<void> {
     const rationale = `Executing tool ${tool.name || "unnamed_tool"} with input: ${input.slice(0, 100)}`;
     VolidatorClient.agentContextStore.enterWith({
       traceId: runId,

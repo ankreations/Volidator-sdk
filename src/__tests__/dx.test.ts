@@ -1,12 +1,12 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VolidatorClient } from "../index";
 
 const TEST_KEY = "volidator-test-key-32-chars-xyzw";
 
 describe("Volidator SDK DX Enhancements", () => {
   beforeEach(() => {
-    vi.spyOn(console, "warn").mockImplementation(() => { });
-    vi.spyOn(console, "error").mockImplementation(() => { });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -124,7 +124,7 @@ describe("Volidator SDK DX Enhancements", () => {
 
       // Verify the warning was printed
       expect(console.warn).toHaveBeenCalledWith(
-        expect.stringContaining("Log metadata exceeded maximum depth limit")
+        expect.stringContaining("Log metadata exceeded maximum depth limit"),
       );
 
       // Verify final payload was indeed truncated
@@ -152,7 +152,7 @@ describe("Volidator SDK DX Enhancements", () => {
       });
 
       expect(console.warn).toHaveBeenCalledWith(
-        expect.stringContaining("One or more log metadata string values exceeded")
+        expect.stringContaining("One or more log metadata string values exceeded"),
       );
 
       const decryptedMeta = await decryptPayload(entry.encryptedPayload, TEST_KEY);
@@ -168,7 +168,7 @@ describe("Volidator SDK DX Enhancements", () => {
   // ---------------------------------------------------------------------------
   describe("Batcher client", () => {
     it("stores logs and auto-flushes on count limit", async () => {
-      const fetchSpy = vi.fn(async () => ({ ok: true } as Response));
+      const fetchSpy = vi.fn(async () => ({ ok: true }) as Response);
       vi.stubGlobal("fetch", fetchSpy);
 
       const client = new VolidatorClient({
@@ -194,7 +194,7 @@ describe("Volidator SDK DX Enhancements", () => {
     });
 
     it("flushes manually", async () => {
-      const fetchSpy = vi.fn(async () => ({ ok: true } as Response));
+      const fetchSpy = vi.fn(async () => ({ ok: true }) as Response);
       vi.stubGlobal("fetch", fetchSpy);
 
       const client = new VolidatorClient({
@@ -263,7 +263,7 @@ describe("Volidator SDK DX Enhancements", () => {
         client.generateEmbedToken({
           actorId: "actor123",
           scope: "actor",
-        })
+        }),
       ).rejects.toThrow("requires projectId and clientSecret");
     });
   });
@@ -276,13 +276,19 @@ async function decryptPayload(encrypted: string, rawKey: string): Promise<any> {
   const ciphertext = bytes.slice(12);
   const keyHash = await globalThis.crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(rawKey)
+    new TextEncoder().encode(rawKey),
   );
   const cryptoKey = await globalThis.crypto.subtle.importKey(
-    "raw", keyHash, { name: "AES-GCM" }, false, ["decrypt"]
+    "raw",
+    keyHash,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"],
   );
   const plain = await globalThis.crypto.subtle.decrypt(
-    { name: "AES-GCM", iv }, cryptoKey, ciphertext
+    { name: "AES-GCM", iv },
+    cryptoKey,
+    ciphertext,
   );
   return JSON.parse(new TextDecoder().decode(plain));
 }

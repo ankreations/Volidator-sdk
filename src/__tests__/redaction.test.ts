@@ -7,7 +7,7 @@
  * the storage layer, not just at the application layer.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VolidatorClient } from "../index";
 
 // ---------------------------------------------------------------------------
@@ -23,13 +23,19 @@ async function decryptPayload(encrypted: string, rawKey: string): Promise<any> {
   const ciphertext = bytes.slice(12);
   const keyHash = await globalThis.crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(rawKey)
+    new TextEncoder().encode(rawKey),
   );
   const cryptoKey = await globalThis.crypto.subtle.importKey(
-    "raw", keyHash, { name: "AES-GCM" }, false, ["decrypt"]
+    "raw",
+    keyHash,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"],
   );
   const plain = await globalThis.crypto.subtle.decrypt(
-    { name: "AES-GCM", iv }, cryptoKey, ciphertext
+    { name: "AES-GCM", iv },
+    cryptoKey,
+    ciphertext,
   );
   return JSON.parse(new TextDecoder().decode(plain));
 }
@@ -272,8 +278,9 @@ describe("metadata guardrails", () => {
     for (let i = 0; i < 200; i++) {
       hugeMeta[`key_${i}`] = "x".repeat(100);
     }
-    await expect(client.log({ actor: "alice", action: "test", metadata: hugeMeta }))
-      .rejects.toThrow(/10KB/);
+    await expect(
+      client.log({ actor: "alice", action: "test", metadata: hugeMeta }),
+    ).rejects.toThrow(/10KB/);
   });
 
   it("truncates deeply nested objects to [Truncated - Depth Exceeded]", async () => {

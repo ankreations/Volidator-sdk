@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { VolidatorClient } from "../index";
 
 const TEST_KEY = "volidator-test-key-32-chars-xyzw";
@@ -14,7 +14,7 @@ function makeClient(overrides: Record<string, any> = {}): VolidatorClient {
 describe("Trace Ordering (Lamport Logical Timestamps)", () => {
   it("should increment the local clock on each prepareLogEntry", async () => {
     const client = makeClient();
-    
+
     const entry1 = await (client as any).prepareLogEntry({ action: "test.action1" });
     const entry2 = await (client as any).prepareLogEntry({ action: "test.action2" });
 
@@ -24,7 +24,7 @@ describe("Trace Ordering (Lamport Logical Timestamps)", () => {
 
   it("should sync with incoming trace context clock using max(local, incoming) + 1", async () => {
     const client = makeClient();
-    
+
     // Simulate incoming HTTP request with x-volidator-clock header = 10
     const mockRequest = {
       headers: {
@@ -47,7 +47,7 @@ describe("Trace Ordering (Lamport Logical Timestamps)", () => {
     await VolidatorClient.logicalClockStore.run({ clock: 50 }, async () => {
       const entry1 = await (client as any).prepareLogEntry({ action: "test.action" });
       const entry2 = await (client as any).prepareLogEntry({ action: "test.action2" });
-      
+
       // Thread context local clock should increment within store context: 50 -> 51 -> 52
       expect(entry1.logicalClock).toBe(51);
       expect(entry2.logicalClock).toBe(52);
@@ -83,7 +83,7 @@ describe("Envelope Size Limits (Claim Check Pattern)", () => {
 
   it("should upload encrypted payload to storage and return isClaimCheck true for large payloads (>30KB)", async () => {
     const client = makeClient();
-    
+
     // Generate large metadata object by creating 40 keys of 1000 characters each
     // (bypassing the 1000-char string truncation limit in limitDepth)
     const largeMetadata: Record<string, string> = {};
@@ -94,10 +94,13 @@ describe("Envelope Size Limits (Claim Check Pattern)", () => {
     const mockFetch = vi.fn().mockImplementation(() => Promise.resolve({ ok: true, status: 200 }));
     globalThis.fetch = mockFetch;
 
-    const entry = await (client as any).prepareLogEntry({
-      action: "large.payload",
-      metadata: largeMetadata,
-    }, 100000); // Override metadata limit check to let us build a >30KB payload
+    const entry = await (client as any).prepareLogEntry(
+      {
+        action: "large.payload",
+        metadata: largeMetadata,
+      },
+      100000,
+    ); // Override metadata limit check to let us build a >30KB payload
 
     expect(entry.isClaimCheck).toBe(true);
     // encryptedPayload should be a 64-character content hash
@@ -119,27 +122,33 @@ describe("Envelope Size Limits (Claim Check Pattern)", () => {
     }
 
     await expect(
-      (client as any).prepareLogEntry({
-        action: "giant.payload",
-        metadata: giantMetadata,
-      }, 10000000) // Override standard metadata limit check
+      (client as any).prepareLogEntry(
+        {
+          action: "giant.payload",
+          metadata: giantMetadata,
+        },
+        10000000,
+      ), // Override standard metadata limit check
     ).rejects.toThrow("Volidator SDK Error: Audit log payload exceeds the 5MB hard limit");
   });
 
   it("should handle 429 quota limit responses from the ingestion endpoint", async () => {
     const client = makeClient();
 
-    const mockFetch = vi.fn().mockImplementation(() => Promise.resolve({
-      ok: false,
-      status: 429,
-      statusText: "Too Many Requests",
-      json: () => Promise.resolve({ error: "Monthly Ingestion Quota Exceeded for this Project Tier." })
-    }));
+    const mockFetch = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        json: () =>
+          Promise.resolve({ error: "Monthly Ingestion Quota Exceeded for this Project Tier." }),
+      }),
+    );
     globalThis.fetch = mockFetch;
 
     const logged = await client.log({
       action: "quota.test",
-      metadata: { foo: "bar" }
+      metadata: { foo: "bar" },
     });
 
     // log() swallows endpoint failures and returns false
