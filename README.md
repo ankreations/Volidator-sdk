@@ -508,6 +508,48 @@ await volidator.agent.handoff({
 });
 ```
 
+### Framework Integrations
+
+Instead of manually logging agent actions, you can use our built-in framework plugins.
+
+#### LangChain.js Callback Handler
+
+Import from `@volidator/node/agent-langchain` to automatically track tool start, end, error states, outputs, and latencies:
+
+```typescript
+import { VolidatorLangChainHandler } from "@volidator/node/agent-langchain";
+import { ChatOpenAI } from "@langchain/openai";
+
+const handler = new VolidatorLangChainHandler(volidator, {
+  actor: "search-agent-v1",
+  tenant: "customer_acme" // Optional
+});
+
+const model = new ChatOpenAI({
+  callbacks: [handler] // Pass globally, or per-run
+});
+```
+
+#### Vercel AI SDK Callback
+
+Import from `@volidator/node/agent-vercel` to automatically instrument tool execution inside `generateText` or `streamText` steps:
+
+```typescript
+import { createVercelAISDKCallback } from "@volidator/node/agent-vercel";
+import { generateText } from "ai";
+
+const onStepFinish = createVercelAISDKCallback(volidator, {
+  actor: "customer-support-agent"
+});
+
+const result = await generateText({
+  model: openai("gpt-4o"),
+  prompt: "What's the weather like?",
+  tools: { ... },
+  onStepFinish // Pass the callback wrapper here
+});
+```
+
 ### Trace Correlation & Logical Clocks (Lamport Timestamps)
 
 Pass standard trace metadata (`traceId`, `spanId`, `parentSpanId`) to map out parent-child relationships and causality graphs between agent steps.
