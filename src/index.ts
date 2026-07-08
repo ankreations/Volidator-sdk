@@ -182,7 +182,7 @@ export class VolidatorClient {
   private activeKeyId: string;
   private keyring: Record<string, string>;
   private hashedKeyring: Record<string, Uint8Array>;
-  
+
   // Custom limit for metadata object serialization size
   private maxMetadataSize: number;
 

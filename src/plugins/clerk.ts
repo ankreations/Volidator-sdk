@@ -35,11 +35,11 @@ export function createClerkAudit({
       }
 
       const originalLog = ctx.volidator.log;
-      
+
       // Override the scoped logger to automatically attach the Clerk actor ID
       ctx.volidator.log = async (payload: LogPayload) => {
         const enrichedPayload = { ...payload };
-        
+
         if (!enrichedPayload.actor && userId) {
           enrichedPayload.actor = userId;
         }
