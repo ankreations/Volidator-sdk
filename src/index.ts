@@ -1333,6 +1333,32 @@ export class VolidatorClient {
       credentialId: credential.id,
     };
   }
+
+  /**
+   * Purge (tombstone) all logs associated with a specific customer (actorId).
+   * Generates the actor's blind index client-side and requests deletion from the edge.
+   */
+  async purgeActorLogs(actorId: string): Promise<{ deletedCount: number }> {
+    const activeKeyBuffer = await this._getHashedKey(this.activeKeyId);
+    const actorBlindIndex = await this.generateBlindIndex(actorId, activeKeyBuffer);
+
+    const res = await fetch(
+      `${this.endpoint}/v1/projects/${this.projectId}/actors/${actorBlindIndex}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+      }
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Failed to purge actor logs: ${res.statusText} (${errText})`);
+    }
+
+    return (await res.json()) as { deletedCount: number };
+  }
 }
 
 // ---------------------------------------------------------------------------
