@@ -107,11 +107,13 @@ export const volidator = new VolidatorClient({
 ```
 
 ### Transient Errors & Retry Strategy
-By default, the SDK automatically retries log delivery on network errors or 5xx server responses using an exponential backoff strategy (delays: ~500ms → ~1500ms → ~4500ms). Client errors (4xx) are never retried.
+By default, the SDK automatically retries log delivery on network errors or 5xx server responses using an exponential backoff strategy (delays: ~500ms → ~1500ms → ~4500ms). Both single `log()` and batch `logBatch()` operations utilize this retry strategy. Client errors (4xx) are never retried.
+
+If a batch ingestion operation (`logBatch()`) fails after exhausting all retries, the `onDeliveryFailure` callback will be invoked once for each individual log payload contained in that batch.
 
 > **⚠️ Serverless / Edge Function execution time caveat:**
 > Worst-case retry attempts take up to ~6.5 seconds. If you are running inside a serverless or Edge environment (e.g. Vercel, Next.js Edge, Cloudflare Workers) with strict duration limits:
-> - Wrap log calls in `ctx.waitUntil(volidator.log(...))` so the worker doesn't block response delivery.
+> - Wrap log calls in `ctx.waitUntil(volidator.log(...))` or `ctx.waitUntil(volidator.logBatch(...))` so the worker doesn't block response delivery.
 > - Or reduce `maxRetries` to `1` (or `0` to disable retries) to avoid hitting runtime execution limits.
 
 ### Metadata Limits & Truncation

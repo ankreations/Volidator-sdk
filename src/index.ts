@@ -746,52 +746,74 @@ export class VolidatorClient {
   }
 
   // ---------------------------------------------------------------------------
-  // log() — Encrypt and ingest a single audit event
+  // fetchWithRetry() — Private helper to perform robust HTTP requests with backoff
   // ---------------------------------------------------------------------------
-  async log(payload: LogPayload, maxMetaOverride?: number): Promise<boolean> {
-    const entry = await this.prepareLogEntry(payload, maxMetaOverride);
+  private async fetchWithRetry(
+    url: string,
+    options: RequestInit,
+    maxRetries = this.maxRetries
+  ): Promise<Response> {
     let attempt = 0;
     let delay = 500;
     let lastError: Error = new Error("Unknown error");
 
-    while (attempt <= this.maxRetries) {
+    while (attempt <= maxRetries) {
       try {
-        const res = await fetch(`${this.endpoint}/v1/log`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(entry),
-        });
+        const res = await fetch(url, options);
 
         if (res.ok) {
-          return true;
+          return res;
         }
 
         lastError = new Error(`Server returned status ${res.status}`);
 
-        // Do not retry 4xx client errors
+        // Do not retry 4xx client errors (bad request, unauthorized, forbidden, etc.)
         if (res.status >= 400 && res.status < 500) {
           break;
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
       }
 
       attempt++;
-      if (attempt <= this.maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
+      if (attempt <= maxRetries) {
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
         delay *= 3;
       }
     }
 
-    console.error(`[Volidator] Failed to send log after ${attempt} attempts: ${lastError.message}`);
-    if (this.onDeliveryFailure) {
-      try {
-        this.onDeliveryFailure(payload, lastError);
-      } catch (cbErr: any) {
-        console.error(`[Volidator] Error in onDeliveryFailure callback: ${cbErr.message}`);
+    throw lastError;
+  }
+
+  // ---------------------------------------------------------------------------
+  // log() — Encrypt and ingest a single audit event
+  // ---------------------------------------------------------------------------
+  async log(payload: LogPayload, maxMetaOverride?: number): Promise<boolean> {
+    const entry = await this.prepareLogEntry(payload, maxMetaOverride);
+
+    try {
+      const res = await this.fetchWithRetry(`${this.endpoint}/v1/log`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(entry),
+      });
+
+      if (res.ok) {
+        return true;
+      }
+    } catch (err: unknown) {
+      const errorObj = err instanceof Error ? err : new Error(String(err));
+      console.error(`[Volidator] Failed to send log: ${errorObj.message}`);
+      if (this.onDeliveryFailure) {
+        try {
+          this.onDeliveryFailure(payload, errorObj);
+        } catch (cbErr: unknown) {
+          const cbErrorObj = cbErr instanceof Error ? cbErr : new Error(String(cbErr));
+          console.error(`[Volidator] Error in onDeliveryFailure callback: ${cbErrorObj.message}`);
+        }
       }
     }
     return false;
@@ -807,7 +829,7 @@ export class VolidatorClient {
 
     // Cap batch size at 100
     const batch = payloads.slice(0, 100);
-    const preparedEntries: any[] = [];
+    const preparedEntries: Record<string, unknown>[] = [];
     let rejected = payloads.length - batch.length;
 
     const results = await Promise.allSettled(
@@ -828,7 +850,7 @@ export class VolidatorClient {
     }
 
     try {
-      const res = await fetch(`${this.endpoint}/v1/logs/batch`, {
+      const res = await this.fetchWithRetry(`${this.endpoint}/v1/logs/batch`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
@@ -843,8 +865,20 @@ export class VolidatorClient {
         console.error(`[Volidator] Batch ingestion endpoint returned status: ${res.status}`);
         return { accepted: 0, rejected: rejected + preparedEntries.length };
       }
-    } catch (err: any) {
-      console.error(`[Volidator] Failed to send log batch: ${err.message}`);
+    } catch (err: unknown) {
+      const errorObj = err instanceof Error ? err : new Error(String(err));
+      console.error(`[Volidator] Failed to send log batch after retries: ${errorObj.message}`);
+      if (this.onDeliveryFailure) {
+        try {
+          // Notify callback of each payload that failed delivery in this batch
+          for (const payload of batch) {
+            this.onDeliveryFailure(payload, errorObj);
+          }
+        } catch (cbErr: unknown) {
+          const cbErrorObj = cbErr instanceof Error ? cbErr : new Error(String(cbErr));
+          console.error(`[Volidator] Error in onDeliveryFailure callback during batch failure: ${cbErrorObj.message}`);
+        }
+      }
       return { accepted: 0, rejected: rejected + preparedEntries.length };
     }
   }
@@ -1017,8 +1051,9 @@ export class VolidatorClient {
       payload.view = compressed;
     }
 
-    // 4. Sign as HS256 JWT using the project's clientSecret
-    const token = await this.signHS256JWT(payload, clientSecret);
+    // 4. Sign as HS256 JWT using the SHA-256 hash of the project's clientSecret to preserve ZK model
+    const clientSecretHash = await this.sha256(clientSecret);
+    const token = await this.signHS256JWT(payload, clientSecretHash);
 
     // 5. Append the keyring as the URL hash fragment
     const keyringString = Object.entries(this.keyring)
@@ -1030,6 +1065,14 @@ export class VolidatorClient {
     const embedUrl = `${dashboardUrl}/embed/${token}${hostParam}#${keyringString}`;
 
     return { token, embedUrl };
+  }
+
+  private async sha256(text: string): Promise<string> {
+    const buf = new TextEncoder().encode(text);
+    const hash = await globalThis.crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(hash))
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
   }
 
   private async signHS256JWT(payload: object, secret: string): Promise<string> {
