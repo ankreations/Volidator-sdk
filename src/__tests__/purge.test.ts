@@ -66,4 +66,46 @@ describe("Volidator SDK GDPR Purge", () => {
       Authorization: "Bearer val_live_test_key",
     });
   });
+
+  it("sends options in the body when provided", async () => {
+    const client = new VolidatorClient({
+      projectId: "prj_test_123",
+      apiKey: "val_live_test_key",
+      encryptionKey: TEST_KEY,
+      endpoint: "http://localhost:8787"
+    });
+
+    const options = {
+      sessionToken: "ast_session_123",
+      webauthn: {
+        challenge: "challenge_nonce",
+        signature: "signature_data",
+        authenticatorData: "auth_data",
+        clientDataJSON: "client_json",
+        credentialId: "cred_id",
+        maxCreatedAt: "2026-07-09T00:00:00.000Z",
+      }
+    };
+
+    const result = await client.purgeActorLogs("usr_alice", options);
+
+    expect(result.deletedCount).toBe(5);
+    expect(fetchSpy.spy).toHaveBeenCalledTimes(1);
+
+    const opts = fetchSpy.getLastOpts();
+    expect(opts?.method).toBe("DELETE");
+    expect(opts?.headers).toEqual({
+      Authorization: "Bearer val_live_test_key",
+      "Content-Type": "application/json",
+    });
+    expect(JSON.parse(opts?.body as string)).toEqual({
+      sessionToken: "ast_session_123",
+      challenge: "challenge_nonce",
+      signature: "signature_data",
+      authenticatorData: "auth_data",
+      clientDataJSON: "client_json",
+      credentialId: "cred_id",
+      maxCreatedAt: "2026-07-09T00:00:00.000Z",
+    });
+  });
 });
