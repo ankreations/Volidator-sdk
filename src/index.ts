@@ -212,6 +212,13 @@ export class VolidatorClient {
    * and increment Lamport logical clock sequences across execution boundaries
    * (e.g. within API requests or serverless handler contexts).
    */
+  /**
+   * Optional registered callback to extract trace details dynamically from
+   * OpenTelemetry context if active. Avoids dynamic imports or OTel library
+   * checks in high-frequency execution paths.
+   */
+  public static otelContextResolver: (() => { traceId?: string; spanId?: string } | null) | null = null;
+
   public static readonly logicalClockStore: AsyncLocalStorage<{ clock: number }> =
     new AsyncLocalStorage<{ clock: number }>();
   private fallbackLogicalClock = 0;
@@ -556,6 +563,26 @@ export class VolidatorClient {
   // prepareLogEntry() — Prepares, redacts, and encrypts a single log entry payload
   // ---------------------------------------------------------------------------
   private async prepareLogEntry(payload: LogPayload, maxMetaOverride?: number) {
+    // Resolve trace context synchronously at the very start to avoid losing context during async execution yields
+    let traceId = payload.traceId;
+    let spanId = payload.spanId;
+
+    if (!traceId || !spanId) {
+      if (VolidatorClient.otelContextResolver) {
+        try {
+          const otelCtx = VolidatorClient.otelContextResolver();
+          if (otelCtx) {
+            if (!traceId && otelCtx.traceId) {
+              traceId = otelCtx.traceId;
+            }
+            if (!spanId && otelCtx.spanId) {
+              spanId = otelCtx.spanId;
+            }
+          }
+        } catch {}
+      }
+    }
+
     // Hard ceiling guardrail: reject immediately if raw metadata exceeds 5MB limit
     const PAYLOAD_5MB_LIMIT = 5 * 1024 * 1024;
     const metadata = payload.metadata || {};
@@ -741,8 +768,6 @@ export class VolidatorClient {
     }
 
     // Auto-extract trace contexts and logical clock from incoming request if present
-    let traceId = payload.traceId;
-    let spanId = payload.spanId;
     const parentSpanId = payload.parentSpanId;
     let logicalClock = payload.logicalClock;
 

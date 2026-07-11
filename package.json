@@ -1,6 +1,6 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and edge runtimes",
   "license": "MIT",
   "publishConfig": {
@@ -43,6 +43,11 @@
       "types": "./dist/plugins/agent-vercel.d.ts",
       "import": "./dist/plugins/agent-vercel.js",
       "require": "./dist/plugins/agent-vercel.cjs"
+    },
+    "./otel": {
+      "types": "./dist/plugins/otel.d.ts",
+      "import": "./dist/plugins/otel.js",
+      "require": "./dist/plugins/otel.cjs"
     }
   },
   "scripts": {
@@ -51,7 +56,31 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.0.0 <2.0.0",
+    "@opentelemetry/sdk-trace-base": ">=1.0.0 <2.0.0",
+    "@opentelemetry/sdk-logs": ">=0.30.0 <2.0.0",
+    "@opentelemetry/core": ">=1.0.0 <2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-logs": {
+      "optional": true
+    },
+    "@opentelemetry/core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/core": "^1.26.0",
+    "@opentelemetry/sdk-logs": "^0.53.0",
+    "@opentelemetry/sdk-trace-base": "^1.26.0",
     "@types/node": "^20.0.0",
     "tsup": "^8.5.1",
     "typescript": "^5.0.0",

@@ -54,10 +54,13 @@ Volidator solves this with a **Zero-Knowledge, High-Accountability Audit Ledger*
 10. [Embed Token](#10-embed-token)
 11. [Compliance Helpers](#11-compliance-helpers)
 12. [Next.js Middleware](#12-nextjs-middleware)
+13. [Auth Plugins](#13-auth-plugins)
 14. [`@volidator/react`](#14-volidatorreact)
 15. [AI Agent Auditing (VolidatorAgent)](#15-ai-agent-auditing-volidatoragent)
 16. [Batch Ingestion (logBatch)](#16-batch-ingestion-logbatch)
 17. [Large Payloads (Claim Check Pattern)](#17-large-payloads-claim-check-pattern)
+18. [Fluent Batcher (batcher)](#18-fluent-batcher-batcher)
+19. [OpenTelemetry Integration (otel)](#19-opentelemetry-integration-otel)
 
 ---
 
@@ -627,6 +630,58 @@ await batcher.flush();
 > **⚠️ Serverless / Edge Warning:**
 > `autoFlushInterval` uses `setInterval` internally. In serverless and Edge environments (like Cloudflare Workers, Vercel Edge, Next.js Edge), the V8 isolate is **frozen or destroyed** as soon as the response is returned to the user. Background timers will silently fail to execute, resulting in dropped logs.
 > **Only use `autoFlushInterval` in long-lived Node.js applications** (Express, Fastify, CLI tools). For serverless/edge functions, **always manually call `await batcher.flush()`** or pass the promise to `ctx.waitUntil()`.
+
+---
+
+## 19. OpenTelemetry Integration (`@volidator/node/otel`)
+
+Volidator integrates seamlessly with OpenTelemetry (OTel) pipelines to trace and audit system executions (e.g. AI agent tool calls) while maintaining E2EE security guarantees.
+
+### Import the Plugin
+Importing the otel plugin automatically registers context propagation:
+```typescript
+import "@volidator/node/otel";
+```
+
+### Auto-Enrich Spans
+When you call `volidator.log()`, it automatically extracts the `traceId` and `spanId` from the active OTel context. You can also manually enrich any payload:
+```typescript
+import { enrichWithOtel } from "@volidator/node/otel";
+
+const payload = enrichWithOtel({
+  action: "agent.thought",
+  actor: "writer-agent",
+});
+```
+
+### OTel Driver Redirect
+You can redirect all client log events to the active OTel span instead of sending HTTP requests directly. This is useful for collecting all events into a single OTel trace first, then exporting them:
+```typescript
+import { enableOtelDriverRedirect } from "@volidator/node/otel";
+
+enableOtelDriverRedirect(volidator);
+
+// This log will now be recorded as a span event on the active OTel span
+await volidator.log({
+  action: "user.login.success",
+  actor: "usr_123",
+});
+```
+
+### Exporting Spans/Logs to Volidator
+Use `VolidatorSpanExporter` or `VolidatorLogExporter` in your OpenTelemetry Collector SDK setup to push captured events securely back into the Volidator ledger:
+
+```typescript
+import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { VolidatorSpanExporter } from "@volidator/node/otel";
+import { volidator } from "./volidator";
+
+// Register Volidator Span Exporter
+const provider = new BasicTracerProvider();
+provider.addSpanProcessor(
+  new SimpleSpanProcessor(new VolidatorSpanExporter(volidator))
+);
+```
 
 ---
 

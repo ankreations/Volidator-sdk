@@ -8,6 +8,7 @@ export default defineConfig({
     "plugins/universal": "src/plugins/universal.ts",
     "plugins/agent-langchain": "src/plugins/agent-langchain.ts",
     "plugins/agent-vercel": "src/plugins/agent-vercel.ts",
+    "plugins/otel": "src/plugins/otel.ts",
   },
   format: ["cjs", "esm"],
   dts: true,

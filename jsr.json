@@ -1,6 +1,6 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and serverless edge environments",
   "exports": {
     ".": "./src/index.ts",
@@ -8,6 +8,7 @@
     "./clerk": "./src/plugins/clerk.ts",
     "./universal": "./src/plugins/universal.ts",
     "./agent-langchain": "./src/plugins/agent-langchain.ts",
-    "./agent-vercel": "./src/plugins/agent-vercel.ts"
+    "./agent-vercel": "./src/plugins/agent-vercel.ts",
+    "./otel": "./src/plugins/otel.ts"
   }
 }
