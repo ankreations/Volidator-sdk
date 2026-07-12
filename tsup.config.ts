@@ -9,6 +9,8 @@ export default defineConfig({
     "plugins/agent-langchain": "src/plugins/agent-langchain.ts",
     "plugins/agent-vercel": "src/plugins/agent-vercel.ts",
     "plugins/otel": "src/plugins/otel.ts",
+    "plugins/fdr-vcr": "src/plugins/fdr-vcr.ts",
+    "plugins/fdr-vector": "src/plugins/fdr-vector.ts",
   },
   format: ["cjs", "esm"],
   dts: true,

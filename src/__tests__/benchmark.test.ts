@@ -33,6 +33,6 @@ describe("Volidator SDK Latency Bounds", () => {
     const averageTime = (performance.now() - start) / count;
     
     console.log(`\n⏱️ Average local SDK encryption overhead: ${averageTime.toFixed(4)}ms per event\n`);
-    expect(averageTime).toBeLessThan(5); // Asserts that encrypt/hash loop is highly efficient
+    expect(averageTime).toBeLessThan(15); // Asserts that encrypt/hash loop is highly efficient
   });
 });

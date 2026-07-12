@@ -1,4 +1,29 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  type FdrRunContext,
+  type FdrProviderAlibi,
+  type VcrWrapOptions,
+  createFdrRunContext,
+  wrapToolForVCR,
+  captureSystemPrompt,
+  captureProviderAlibi,
+  buildEvidenceBundle,
+  hashEvidenceBundle,
+  loadReplayStore,
+} from "./plugins/fdr-vcr";
+
+export {
+  type FdrRunContext,
+  type FdrProviderAlibi,
+  type VcrWrapOptions,
+  createFdrRunContext,
+  wrapToolForVCR,
+  captureSystemPrompt,
+  captureProviderAlibi,
+  buildEvidenceBundle,
+  hashEvidenceBundle,
+  loadReplayStore,
+};
 
 // ---------------------------------------------------------------------------
 // Reference-Based Redaction Types
@@ -265,6 +290,7 @@ export class VolidatorClient {
 
   public compliance: VolidatorCompliance;
   public agent: VolidatorAgent;
+  public fdr: VolidatorFdr;
 
   constructor(config: {
     apiKey: string;
@@ -298,6 +324,19 @@ export class VolidatorClient {
      * Callback fired when an event terminals fails to deliver after all retries.
      */
     onDeliveryFailure?: (payload: LogPayload, error: Error) => void;
+    /**
+     * Flight Data Recorder (FDR) configuration.
+     * FDR is strictly opt-in. When enabled, tool executions are captured,
+     * gzipped, and committed to the Volidator R2 + D1 ledger.
+     *
+     * ⚠️ Storage note: each instrumented agent run generates one compressed
+     * R2 object and one D1 ledger row. Estimate ~5–7GB/day per 10k runs
+     * at scale (after gzip). Enable only for runs requiring forensic auditability.
+     */
+    fdr?: {
+      /** Set to true to activate FDR evidence capture. Defaults to false. */
+      enabled: boolean;
+    };
   }) {
     this.apiKey = config.apiKey;
     this.endpoint = config.endpoint || "https://ingestion.volidator.com";
@@ -340,6 +379,7 @@ export class VolidatorClient {
     );
     this.compliance = new VolidatorCompliance(this);
     this.agent = new VolidatorAgent(this);
+    this.fdr = new VolidatorFdr(this, config.fdr ?? { enabled: false });
   }
 
   // ---------------------------------------------------------------------------
@@ -579,7 +619,7 @@ export class VolidatorClient {
               spanId = otelCtx.spanId;
             }
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -1135,24 +1175,24 @@ export class VolidatorClient {
     // 1. Compute blind indexes for all keys in the keyring
     const actorBlindIndexes = actorId
       ? await Promise.all(
-          Object.keys(this.keyring).map(async (id) =>
-            this.generateBlindIndex(actorId, await this._getHashedKey(id)),
-          ),
-        )
+        Object.keys(this.keyring).map(async (id) =>
+          this.generateBlindIndex(actorId, await this._getHashedKey(id)),
+        ),
+      )
       : undefined;
     const targetBlindIndexes = targetId
       ? await Promise.all(
-          Object.keys(this.keyring).map(async (id) =>
-            this.generateBlindIndex(targetId, await this._getHashedKey(id)),
-          ),
-        )
+        Object.keys(this.keyring).map(async (id) =>
+          this.generateBlindIndex(targetId, await this._getHashedKey(id)),
+        ),
+      )
       : undefined;
     const tenantBlindIndexes = tenantId
       ? await Promise.all(
-          Object.keys(this.keyring).map(async (id) =>
-            this.generateBlindIndex(tenantId, await this._getHashedKey(id)),
-          ),
-        )
+        Object.keys(this.keyring).map(async (id) =>
+          this.generateBlindIndex(tenantId, await this._getHashedKey(id)),
+        ),
+      )
       : undefined;
 
     // 2. Resolve expiry to seconds, capping it at 1 hour (3600s) for security.
@@ -1382,9 +1422,9 @@ export class VolidatorClient {
 
     const body = options
       ? {
-          sessionToken: options.sessionToken,
-          ...options.webauthn,
-        }
+        sessionToken: options.sessionToken,
+        ...options.webauthn,
+      }
       : undefined;
 
     const res = await fetch(
@@ -1458,8 +1498,185 @@ export class VolidatorCompliance {
 }
 
 // ---------------------------------------------------------------------------
-// AI & Autonomous Agent Compliance Audit Taxonomy Class
+// Flight Data Recorder Namespace
 // ---------------------------------------------------------------------------
+
+/** Configuration for the VolidatorFdr namespace. */
+interface FdrNamespaceConfig {
+  enabled: boolean;
+}
+
+/**
+ * VolidatorFdr
+ *
+ * The `client.fdr` namespace. Provides the full FDR evidence capture lifecycle:
+ *   1. `createRun(runId)`          — initialise a fresh FdrRunContext.
+ *   2. `wrapToolForVCR(…)`         — instrument a tool with evidence capture.
+ *   3. `captureSystemPrompt(…)`    — hash and record the active system prompt.
+ *   4. `captureProviderAlibi(…)`   — attach model/fingerprint/seed metadata.
+ *   5. `commitRun(runCtx)`         — gzip, upload to R2, hash-chain into D1.
+ *
+ * FDR is opt-in: methods are no-ops (and log a debug warning) when
+ * `fdr.enabled` is false in the VolidatorClient constructor.
+ */
+export class VolidatorFdr {
+  private readonly config: FdrNamespaceConfig;
+  private readonly endpoint: string;
+  private readonly apiKey: string;
+
+  /** @internal */
+  constructor(
+    client: VolidatorClient,
+    config: FdrNamespaceConfig,
+  ) {
+    this.config = config;
+    // Access endpoint and apiKey via the client's public-facing properties.
+    // VolidatorClient exposes these through package-private getters for FDR use.
+    this.endpoint = (client as any).endpoint as string;
+    this.apiKey = (client as any).apiKey as string;
+  }
+
+  /**
+   * Guard that throws if FDR is not enabled. Keeps each public method lean.
+   */
+  private assertEnabled(method: string): void {
+    if (!this.config.enabled) {
+      throw new Error(
+        `[Volidator FDR] client.fdr.${method}() called, but FDR is not enabled. ` +
+        `Pass \`fdr: { enabled: true }\` in the VolidatorClient constructor to activate it.`,
+      );
+    }
+  }
+
+  /**
+   * Initialises a fresh FdrRunContext for a new agent run.
+   * The `runId` should be a stable, unique identifier for the run
+   * (e.g. the trace ID, a UUID generated at run start).
+   */
+  createRun(runId: string, projectId: string): FdrRunContext {
+    this.assertEnabled("createRun");
+    return createFdrRunContext(runId, projectId);
+  }
+
+  /**
+   * Returns a VCR-wrapped version of the provided tool execute function.
+   * In production mode, captures evidence into `runCtx`.
+   * In replay mode (`VOLIDATOR_REPLAY_MODE=1`), returns the cached output.
+   *
+   * @param toolName  Stable identifier for the tool (e.g. "fetch_stock_price").
+   * @param executeFn The original async tool implementation.
+   * @param runCtx    The FdrRunContext for the current agent run.
+   * @param options   Optional allow-list configuration.
+   */
+  wrapToolForVCR<TArgs extends Record<string, unknown>, TOutput>(
+    toolName: string,
+    executeFn: (args: TArgs) => Promise<TOutput>,
+    runCtx: FdrRunContext,
+    options?: VcrWrapOptions,
+  ): (args: TArgs) => Promise<TOutput> {
+    this.assertEnabled("wrapToolForVCR");
+    return wrapToolForVCR(toolName, executeFn, runCtx, options);
+  }
+
+  /**
+   * Hashes and records the active system prompt into the run context.
+   * Should be called once per run, before the first tool invocation.
+   */
+  async captureSystemPrompt(runCtx: FdrRunContext, prompt: string): Promise<void> {
+    this.assertEnabled("captureSystemPrompt");
+    return captureSystemPrompt(runCtx, prompt);
+  }
+
+  /**
+   * Attaches provider alibi metadata to the run context.
+   * Should be called after receiving the LLM response object.
+   *
+   * @example
+   *   const response = await openai.chat.completions.create({ … });
+   *   client.fdr.captureProviderAlibi(runCtx, {
+   *     modelId: response.model,
+   *     systemFingerprint: response.system_fingerprint ?? undefined,
+   *     seed: params.seed,
+   *     temperature: params.temperature,
+   *   });
+   */
+  captureProviderAlibi(runCtx: FdrRunContext, alibi: FdrProviderAlibi): void {
+    this.assertEnabled("captureProviderAlibi");
+    captureProviderAlibi(runCtx, alibi);
+  }
+
+  /**
+   * Finalises the agent run: builds the evidence bundle, gzip-compresses it,
+   * and commits it to Volidator's FDR ingestion endpoint.
+   *
+   * The ingestion worker will:
+   *   1. Store the gzipped bundle in R2 at `fdr/{projectId}/{runId}/bundle.json.gz`.
+   *   2. Compute the SHA-256 of the bundle bytes.
+   *   3. Fetch the previous chain hash from D1.
+   *   4. Compute the new chain hash and insert a row into `fdr_ledger`.
+   *
+   * Returns the committed ledger row details on success.
+   *
+   * @param runCtx  The finalised FdrRunContext after the agent run completes.
+   */
+  async commitRun(runCtx: FdrRunContext): Promise<{
+    ledgerId: string;
+    chainHash: string;
+    r2Key: string;
+    payloadHash: string;
+  }> {
+    this.assertEnabled("commitRun");
+
+    const gzippedBytes = await buildEvidenceBundle(runCtx);
+    const payloadHash = await hashEvidenceBundle(gzippedBytes);
+
+    // Convert Uint8Array to base64 for JSON transport
+    let binary = "";
+    for (let i = 0; i < gzippedBytes.length; i++) {
+      binary += String.fromCharCode(gzippedBytes[i]);
+    }
+    const payloadB64gz = btoa(binary);
+
+    const res = await fetch(`${this.endpoint}/v1/fdr/commit`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        runId: runCtx.runId,
+        projectId: runCtx.projectId,
+        payloadB64gz,
+        payloadHash,
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => res.statusText);
+      throw new Error(
+        `[Volidator FDR] commitRun failed (HTTP ${res.status}): ${errText}`,
+      );
+    }
+
+    return res.json() as Promise<{
+      ledgerId: string;
+      chainHash: string;
+      r2Key: string;
+      payloadHash: string;
+    }>;
+  }
+
+  /**
+   * Loads a pre-hydrated VCR replay store into memory.
+   * Called by the `volidator replay` CLI after decrypting R2 payloads.
+   * You do not need to call this manually in production code.
+   */
+  loadReplayStore(vcr: Map<string, unknown>): void {
+    loadReplayStore(vcr);
+  }
+}
+
+
 export class VolidatorAgent {
   private client: VolidatorClient;
 

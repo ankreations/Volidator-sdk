@@ -61,6 +61,7 @@ Volidator solves this with a **Zero-Knowledge, High-Accountability Audit Ledger*
 17. [Large Payloads (Claim Check Pattern)](#17-large-payloads-claim-check-pattern)
 18. [Fluent Batcher (batcher)](#18-fluent-batcher-batcher)
 19. [OpenTelemetry Integration (otel)](#19-opentelemetry-integration-otel)
+20. [Flight Data Recorder (FDR)](#20-flight-data-recorder-fdr)
 
 ---
 
@@ -685,6 +686,67 @@ provider.addSpanProcessor(
 
 ---
 
+## 20. Flight Data Recorder (FDR)
+
+The **Flight Data Recorder (FDR)** enables **Input-Side Forensic Reconstruction** of autonomous AI agent runs. When enabled, it captures the exact prompt context, LLM metadata ("alibi"), and tool inputs/outputs, compressing and shipping them securely to Volidator's R2 + D1 ledger.
+
+### Enable FDR
+FDR is strictly opt-in. Enable it during client initialization:
+```typescript
+import { VolidatorClient } from "@volidator/node";
+
+const volidator = new VolidatorClient({
+  apiKey: process.env.VOLIDATOR_API_KEY,
+  encryptionKey: process.env.VOLIDATOR_ENCRYPTION_KEY,
+  fdr: { enabled: true } // Opt-in to Flight Data Recorder
+});
+```
+
+### Wrapping Tools
+Wrap your critical tools at the execution level to record arguments and outputs while scrubbing transport-layer secrets:
+```typescript
+import { wrapToolForVCR } from "@volidator/node/fdr-vcr";
+
+const runCtx = volidator.fdr.createRun("run_uuid_123", "proj_abc");
+
+const calculateTax = volidator.fdr.wrapToolForVCR(
+  "calculate_tax",
+  async (args) => {
+    // Perform calculation or call API
+    return { tax: args.amount * 0.15 };
+  },
+  runCtx,
+  { allowList: ["amount"] } // Scrubs keys like API keys, cookies, or auth tokens
+);
+
+// Call wrapped tool normally inside your agent execution loop
+const result = await calculateTax({ amount: 100, apiKeySecret: "sensitive_secret" });
+```
+
+### Capturing Prompts and Alibis
+Attach prompt information and provider metadata to the run context:
+```typescript
+// Capture system prompt
+await volidator.fdr.captureSystemPrompt(runCtx, "You are a financial analyst agent...");
+
+// Capture provider alibi after generation
+volidator.fdr.captureProviderAlibi(runCtx, {
+  modelId: "gpt-4o-2024-08-06",
+  systemFingerprint: "fp_e2908f90...",
+  seed: 42
+});
+```
+
+### Committing the Run
+Commit the completed run context to upload gzipped payload to R2 and insert the hash-chained row into the immutable D1 ledger:
+```typescript
+const commitResult = await volidator.fdr.commitRun(runCtx);
+console.log(`Run committed with chain hash: ${commitResult.chainHash}`);
+```
+
+---
+
 ## License
 
 MIT © Volidator Contributors
+
