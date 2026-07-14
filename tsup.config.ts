@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     "middleware/next": "src/middleware/next.ts",
+    "fallback-file": "src/fallback-file.ts",
     "plugins/clerk": "src/plugins/clerk.ts",
     "plugins/universal": "src/plugins/universal.ts",
     "plugins/agent-langchain": "src/plugins/agent-langchain.ts",

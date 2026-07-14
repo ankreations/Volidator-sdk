@@ -746,6 +746,70 @@ console.log(`Run committed with chain hash: ${commitResult.chainHash}`);
 
 ---
 
+## Certifying Proxy
+
+For environments where you do not want to install any SDK, you can route HTTP requests (such as LLM completion requests) directly through the Volidator edge proxy to automatically encrypt logs and extract batch proofs.
+
+### Why Use the Proxy?
+- No libraries to install or maintain. Works universally in Python, Go, Rust, or plain HTTP requests.
+- Sub-5ms stream overhead, supporting full real-time Server-Sent Events (SSE).
+- E2EE at the edge: request and response logs are encrypted with your key before storage.
+
+### Quickstart Request
+Target the proxy endpoint and supply your API and encryption keys in the headers:
+
+```bash
+curl -X POST https://ingestion.volidator.com/v1/proxy \
+  -H "Authorization: Bearer val_agent_bb48417cb42cb26fc88106247d" \
+  -H "X-Volidator-Encryption-Key: test-key-32-chars-xyz-abcdefghij" \
+  -H "X-Volidator-Agent-ID: my-agent" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "https://api.anthropic.com/v1/messages",
+    "payload": {
+      "model": "claude-5-sonnet",
+      "max_tokens": 1024,
+      "messages": [{"role": "user", "content": "Hello"}]
+    },
+    "requestProof": true
+  }'
+```
+
+### Retrieving Proof Receipts
+
+- **Via Terminal (REST API):** Query the project endpoint with your log identifier:
+  ```bash
+  curl -H "Authorization: Bearer val_live_bb48417cb42cb26fc88106247d" \
+    "https://management.volidator.com/v1/projects/proj_123/logs/log_5678abcd90ef/proof"
+  ```
+- **Via Dashboard:** Open the Story Visualizer, click on any visual node in the canvas, and inspect the verification results (including FreeTSA certificates and Sigstore Rekor links) in the drawer.
+
+---
+
+## Local Fallback Backups
+
+To guarantee zero audit trail loss during network failures or outages, you can register a local backup file transport.
+
+Import the decoupled file transport adapter and pass it as the `onDeliveryFailure` callback:
+
+```typescript
+import { VolidatorClient } from "@volidator/node";
+import { createFileFallbackTransport } from "@volidator/node/fallback-file";
+
+const fallback = createFileFallbackTransport({
+  directory: "./backups/volidator-logs",
+  filenamePrefix: "my-app-logs",
+});
+
+const client = new VolidatorClient({
+  apiKey: "...",
+  encryptionKey: "...",
+  onDeliveryFailure: fallback,
+});
+```
+
+---
+
 ## License
 
 MIT © Volidator Contributors

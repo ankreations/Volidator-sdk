@@ -249,6 +249,50 @@ export class VolidatorClient {
   private fallbackLogicalClock = 0;
 
   /**
+   * Cryptographically verifies a proof receipt locally.
+   * Returns true if the proof is valid and matches the decrypted event payload.
+   */
+  public static async verifyProof(
+    decryptedPayload: Record<string, any>,
+    proof: {
+      merkleRoot: string;
+      merklePathJson: string;
+    }
+  ): Promise<boolean> {
+    try {
+      const jsonStr = JSON.stringify(decryptedPayload);
+      const encoder = new TextEncoder();
+      const payloadHashBuf = await crypto.subtle.digest("SHA-256", encoder.encode(jsonStr));
+      const payloadHash = Array.from(new Uint8Array(payloadHashBuf))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      const path: string[] = JSON.parse(proof.merklePathJson);
+
+      const sha256Hex = async (text: string): Promise<string> => {
+        const buf = await crypto.subtle.digest("SHA-256", encoder.encode(text));
+        return Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      };
+
+      const checkPath = async (curr: string, depth: number): Promise<boolean> => {
+        if (depth === path.length) {
+          return curr === proof.merkleRoot;
+        }
+        const sibling = path[depth];
+        const hash1 = await sha256Hex(curr + sibling);
+        const hash2 = await sha256Hex(sibling + curr);
+        return (await checkPath(hash1, depth + 1)) || (await checkPath(hash2, depth + 1));
+      };
+
+      return await checkPath(payloadHash, 0);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Thread-local asynchronous context storage used to propagate and automatically
    * attach trace, span, rationale, and tool context to log events and HTTP headers.
    */

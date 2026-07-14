@@ -1,10 +1,11 @@
 {
   "name": "@volidator/node",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Zero-knowledge audit logging SDK for Node.js, Next.js, and serverless edge environments",
   "exports": {
     ".": "./src/index.ts",
     "./next": "./src/middleware/next.ts",
+    "./fallback-file": "./src/fallback-file.ts",
     "./clerk": "./src/plugins/clerk.ts",
     "./universal": "./src/plugins/universal.ts",
     "./agent-langchain": "./src/plugins/agent-langchain.ts",
